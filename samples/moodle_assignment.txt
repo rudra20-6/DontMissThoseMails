@@ -1,0 +1,10 @@
+CS3.301 Operating Systems: Assignment 3 has been released
+Moodle <noreply@moodle.iiit.ac.in>
+Dear student,
+
+Assignment 3 (Process Scheduling Simulator) for CS3.301 Operating Systems and Networks has been released on Moodle.
+The submission is due on Friday at 11:59 PM. Late submissions will attract a 20% penalty per day.
+Submit a single zip file named <rollno>_A3.zip. Link: https://moodle.iiit.ac.in/mod/assign/view.php?id=12345
+
+Regards,
+Course TAs
