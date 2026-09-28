@@ -16,7 +16,7 @@ from email.utils import parsedate_to_datetime
 from app import kv
 from app.config import get_settings
 from app.db import session_scope
-from app.mail.base import MailError, RawEmail
+from app.mail.base import MailError, RawEmail, unwrap_forward
 from app.textutil import clean, extract_urls, html_to_text
 from app.timeutil import parse_local, to_utc_naive, utcnow
 
@@ -76,12 +76,13 @@ class ImapSource:
                     received = utcnow()
                 if received < since:
                     continue
-                text = _body(msg)
+                sender, subject, text = unwrap_forward(
+                    _decode(msg.get("From")), _decode(msg.get("Subject")) or "(no subject)", _body(msg))
                 out.append(
                     RawEmail(
                         message_id=(msg.get("Message-ID") or f"imap-{num.decode()}-{received.isoformat()}").strip(),
-                        sender=_decode(msg.get("From")),
-                        subject=_decode(msg.get("Subject")) or "(no subject)",
+                        sender=sender,
+                        subject=subject,
                         received_at=received,
                         body=text,
                         links=extract_urls(text),

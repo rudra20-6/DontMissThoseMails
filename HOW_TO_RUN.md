@@ -84,18 +84,62 @@ The app reads your inbox with **read-only** permission (`Mail.Read`). You regist
 4. **Certificates & secrets → New client secret** (24 months). Copy the **Value** (not the ID) into `MS_CLIENT_SECRET`.
    Set a calendar reminder to renew it before it expires.
 5. **API permissions → Add a permission → Microsoft Graph → Delegated** → add `Mail.Read`, `User.Read`, `offline_access`.
-6. Keep `MS_TENANT=common`.
+6. `MS_TENANT`: keep `common` if you chose the "any organizational directory and personal accounts" option in step 2.
+   If you registered it as **"this organization only"** (single tenant), set `MS_TENANT` to the **Directory (tenant) ID**
+   from the app's **Overview** page instead. Otherwise login fails with `AADSTS50194 ... not configured as a multi-tenant application`.
 
 You'll actually log in in step 8, after deploying.
 
 **If your college shows "Need admin approval":** your college has blocked user consent. Options:
 
-- **Plan B (easiest): forward to Gmail + IMAP.** In Outlook web → Settings → Mail → Forwarding, forward everything
-  to a Gmail account (some colleges block external forwarding; then try an Outlook *inbox rule* that forwards).
-  In Gmail enable 2-Step Verification, then create an **App Password** (<https://myaccount.google.com/apppasswords>).
-  Set `MAIL_PROVIDER=imap`, `IMAP_HOST=imap.gmail.com`, `IMAP_USERNAME=you@gmail.com`, `IMAP_PASSWORD=<16-char app password>`.
-- **Plan C:** forward to a personal outlook.com account and use Graph with `MS_TENANT=consumers`.
-- **Plan D:** ask your IT department to approve the app (it only reads mail).
+- **Plan B: copy your college mail into a Gmail account and read that with IMAP.** Details in *3b* below.
+- **Plan C:** ask your IT department to approve the app (it only reads mail). Takes days, but then Graph works.
+
+### 3b. Plan B in detail: college Outlook → Gmail → app (no admin needed)
+
+**1. Make a fresh Gmail account just for this** (e.g. `yourname.mailbot@gmail.com`). A dedicated account means
+only college mail lands there.
+
+**2. Give the app an app password:**
+1. Signed in as the new Gmail account, turn on 2-Step Verification: <https://myaccount.google.com/signinoptions/twosv>
+2. Create an app password: <https://myaccount.google.com/apppasswords>. Name it `DontMissThoseMails` and copy the
+   16 characters (spaces don't matter).
+
+**3. Get your college mail into that Gmail.** Try (a). If Outlook refuses or the mail never arrives, use (b).
+
+(a) **Outlook forwarding** (1 minute):
+1. Open <https://outlook.office.com/mail/options/mail/forwarding>
+2. Tick **Enable forwarding**, enter the Gmail address, tick **Keep a copy of forwarded messages**, and click **Save**.
+3. Send yourself a test mail from another account, or wait for one. If it shows up in Gmail within a minute or two, you're done.
+   If you get a bounce like `550 5.7.520 Access denied, Your organization does not allow external forwarding`,
+   your college blocks this, so use (b).
+
+(b) **Power Automate flow.** It forwards each new mail as a normal email from you, which colleges usually allow:
+1. Open <https://make.powerautomate.com> and sign in with your college account.
+2. **+ Create → Automated cloud flow**. Name it `Forward to mailbot`. For the trigger, search **"When a new email arrives (V3)"**
+   (Office 365 Outlook) → **Create**.
+3. In the trigger, set **Folder** to `Inbox`. Leave the rest as is.
+4. **+ New step / +** → search **"Forward an email (V2)"** (Office 365 Outlook):
+   - **Message Id**: click the field → *Dynamic content* → **Message Id** (from the trigger)
+   - **To**: your Gmail address
+5. **Save**. Then check **My flows → Forward to mailbot → Run history** after the next email arrives. It should say *Succeeded*.
+
+The app detects these forwards: it strips `FW:` and uses the **original** sender (e.g. Moodle), so your priority and ignore rules
+still work.
+
+**4. Point the app at Gmail.** On Render → Environment, set:
+```
+MAIL_PROVIDER=imap
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_USERNAME=yourname.mailbot@gmail.com
+IMAP_PASSWORD=the16charapppassword
+IMAP_FOLDER=INBOX
+```
+**Save changes**, wait for the redeploy, then run
+`https://YOUR-APP.onrender.com/admin/poll-now?token=ADMIN_TOKEN`: use a POST from a REST tool, or just wait up to 5 minutes.
+`/status?token=...` → `emails_seen` should start counting up.
+
 
 ---
 
@@ -242,6 +286,15 @@ Meta dashboard → your app → **WhatsApp → Configuration → Webhook → Edi
 - Verify token: the value of `WHATSAPP_VERIFY_TOKEN`
 - Click **Verify and save**, then under **Webhook fields** click **Subscribe** on `messages`.
 
+**Two more things Meta needs before real messages reach the app** (the dashboard's *Test* button works without them, your phone's messages don't):
+
+1. **Switch the app to Live.** Go to App settings → Basic (`https://developers.facebook.com/apps/APP_ID/settings/basic/`),
+   set **Privacy Policy URL** to `https://YOUR-APP.onrender.com/privacy` (the app serves this page), pick a Category, and **Save changes**.
+   Then flip **App Mode: Development → Live** at the top of the dashboard.
+2. **Subscribe your WhatsApp Business Account to the app.** Copy the **WhatsApp Business Account ID** from WhatsApp → *Step 1. Try it out*
+   (it is *not* the Phone number ID). Then open <https://developers.facebook.com/tools/explorer/>, pick your app, paste `WHATSAPP_TOKEN`
+   as the access token, choose **POST**, enter `<WABA_ID>/subscribed_apps`, and click **Submit**. It should return `{"success": true}`.
+
 Now send **hi** from your phone to the test number. The bot replies with the help menu.
 (Also try `curl -X POST "https://YOUR-APP.onrender.com/admin/test-whatsapp?token=ADMIN_TOKEN"`.)
 
@@ -320,7 +373,9 @@ Meta retries, so the reply may arrive late. The cron-job.org pinger (step 8c) pr
 | Symptom | Fix |
 |---------|-----|
 | `/status` says `outlook_connected: false` | Redo 8b. Check the redirect URI in Entra matches `APP_BASE_URL` + `/auth/microsoft/callback` exactly. |
-| `AADSTS65001` / "Need admin approval" | Your college blocks consent → use Plan B (IMAP) in step 3. |
+| `AADSTS50194 ... not configured as a multi-tenant application` | Set `MS_TENANT` on Render to the **Directory (tenant) ID** from the app registration Overview page. |
+| `AADSTS50011` redirect URI mismatch | App registration → Authentication → Web → add `https://YOUR-APP.onrender.com/auth/microsoft/callback` exactly. |
+| `AADSTS65001` / "Need admin approval" | Your college blocks consent → use Plan B (step 3b: Gmail + IMAP). |
 | No WhatsApp messages at all | Check logs on Render. `WhatsApp HTTP 401` → token expired (make the permanent token, step 4.4). `131030` → your number isn't in the test recipient list. |
 | Messages arrive only after you text the bot | The 24h window was closed. That's expected; see "About the 24-hour window". |
 | Webhook "verify" fails in Meta | `WHATSAPP_VERIFY_TOKEN` differs, or the app was asleep. Open `/health` first, then retry. |
