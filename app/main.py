@@ -64,6 +64,26 @@ def index() -> str:
     )
 
 
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy() -> str:
+    """Public privacy policy (Meta requires a URL before an app can be switched to Live mode)."""
+    return """<!doctype html><html><head><meta charset="utf-8"><title>Privacy Policy - DontMissThoseMails</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;line-height:1.6">
+<h1>Privacy Policy</h1>
+<p><b>DontMissThoseMails</b> is a personal assistant used by a single person (its owner) to receive summaries
+of their own email and reminders on their own WhatsApp number. It does not serve the public.</p>
+<h2>What is processed</h2>
+<ul><li>The owner's emails, read with read-only access, to create short summaries, deadlines and event reminders.</li>
+<li>WhatsApp messages the owner sends to the bot, to understand commands.</li></ul>
+<h2>How it is used</h2>
+<p>Email text is sent to Google's Gemini API to be summarised. Summaries, deadlines and reminders are stored in the
+app's database only to send reminders to the owner. Messages from any other WhatsApp number are ignored and not stored.
+No data is sold or shared with anyone else.</p>
+<h2>Deletion</h2><p>The owner can delete all stored data at any time by deleting the app's database.</p>
+<h2>Contact</h2><p>The owner of this deployment.</p></body></html>"""
+
+
 @app.get("/status")
 def status(token: str | None = Query(None)) -> dict:
     _check_admin(token)
