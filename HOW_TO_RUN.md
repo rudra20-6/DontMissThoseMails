@@ -32,7 +32,7 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1      # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 pip install -r requirements-dev.txt
 copy .env.example .env             # then fill it in with: notepad .env
-python -m pytest -q                # should print "23 passed"
+python -m pytest -q                # should print "24 passed"
 ```
 
 **macOS / Linux:**
@@ -279,6 +279,7 @@ Useful admin URLs (all need `?token=ADMIN_TOKEN`):
 |-----|------|
 | `GET /status` | configuration + counts |
 | `GET /admin/items` | last 50 tracked items |
+| `GET /admin/whatsapp-check` | step-by-step WhatsApp diagnosis (`&send=true` sends a test message) |
 | `GET /admin/llm` | Gemini models per key, cooldowns (per-minute / daily), success counts |
 | `GET /admin/digest` | preview today's digest |
 | `POST /admin/poll-now` | check mail right now |
@@ -295,6 +296,26 @@ Everything in the *Behaviour tuning* block of `.env.example` can be changed on R
 - Different reminder rhythm: `DEADLINE_OFFSETS_HOURS=120,48,24,3`.
 
 ## Troubleshooting
+
+### The bot doesn't reply to "hi"
+
+Open `https://YOUR-APP.onrender.com/admin/whatsapp-check?token=ADMIN_TOKEN&send=true` and read it top to bottom:
+
+| What you see | Meaning → fix |
+|---|---|
+| `2_token_and_phone_id.ok: false`, code 190 | Token expired (the temporary one lasts 24h) → create the permanent System User token (step 4.4), update `WHATSAPP_TOKEN` on Render. |
+| `2_token_and_phone_id.ok: false`, code 100 | `WHATSAPP_PHONE_NUMBER_ID` is wrong. Use the **Phone number ID** from WhatsApp → API Setup, not the phone number. |
+| `5_test_send: FAILED ... 131030` | Your number isn't in the test number's allowed list → API Setup → *To* → Manage phone number list → add + verify it. |
+| `5_test_send` accepted, but nothing arrives on the phone | See `last async delivery failure`. `131047` = 24h window closed → send any message from your phone first. |
+| `3_webhook: NONE` | **Meta isn't calling the app.** Usually: (a) the `messages` webhook field isn't **subscribed** (Meta → WhatsApp → Configuration → Webhook fields → `messages` → Subscribe), (b) the Callback URL is wrong, or (c) you're messaging the wrong number. Send the message **from your personal WhatsApp to the test number** shown in API Setup. |
+| `3_webhook ... accepted: false` | The message came from a number different from `WHATSAPP_RECIPIENT`; the `reason` shows both. Fix `WHATSAPP_RECIPIENT` (country code + number, digits only, e.g. `919876543210`). |
+| `last rejected webhook: bad X-Hub-Signature-256` | `WHATSAPP_APP_SECRET` is wrong → copy it again (App settings → Basic) or clear it. |
+
+Tip: to test the webhook without your phone, go to Meta → WhatsApp → Configuration → Webhook fields → `messages` → **Test**.
+That sends a sample payload from a fake number, so `3_webhook` should show it with `accepted: false`. That proves the webhook reaches the app.
+
+Render's free tier also sleeps: the first message after a quiet period can take ~30–60 s while the app wakes up.
+Meta retries, so the reply may arrive late. The cron-job.org pinger (step 8c) prevents this.
 
 | Symptom | Fix |
 |---------|-----|

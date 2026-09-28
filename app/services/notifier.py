@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import kv
+from app import diag, kv
 from app.clients.whatsapp import REENGAGEMENT_ERROR, WhatsAppClient, WhatsAppError
 from app.config import get_settings
 from app.models import Outbox
@@ -87,8 +87,10 @@ def reply(session: Session, text: str, buttons: Buttons = None) -> None:
 def _send_or_queue(session: Session, payload: dict) -> bool:
     try:
         _deliver(payload)
+        diag.record("last_send_ok", preview=payload["text"][:80])
         return True
     except WhatsAppError as exc:
+        diag.record("last_send_error", error=str(exc)[:500], code=exc.code)
         _queue(session, payload)
         if exc.code == REENGAGEMENT_ERROR:
             _nudge(session)

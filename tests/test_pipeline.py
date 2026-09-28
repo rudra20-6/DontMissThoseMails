@@ -161,3 +161,19 @@ def test_pause_holds_messages_until_resume(sent):
     with session_scope() as s:
         handle_message(s, text="resume")
     assert any(m["text"] == "non-urgent update" for m in sent)
+
+
+def test_webhook_from_wrong_number_is_diagnosed(sent):
+    from app import diag
+    from app.main import app
+
+    payload = {"entry": [{"changes": [{"value": {"messages": [{
+        "from": "918888888888", "id": "wamid.x", "type": "text", "text": {"body": "hi"}}]}}]}]}
+    TestClient(app).post("/webhook/whatsapp", json=payload)
+    last = diag.read("last_webhook_message")
+    assert last["accepted"] is False and "918888888888" in last["reason"]
+    assert sent == []
+
+    payload["entry"][0]["changes"][0]["value"]["messages"][0].update({"from": "919999999999", "id": "wamid.y"})
+    TestClient(app).post("/webhook/whatsapp", json=payload)
+    assert "help" in sent[-1]["text"].lower() or "hey" in sent[-1]["text"].lower()
