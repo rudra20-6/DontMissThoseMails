@@ -196,7 +196,7 @@ def admin_test(token: str | None = Query(None)) -> dict:
     return {"delivered_now": delivered}
 
 
-@app.get("clearsapp-check")
+@app.get("/admin/whatsapp-check")
 def whatsapp_check(token: str | None = Query(None), send: bool = False) -> dict:
     """Step-by-step WhatsApp diagnosis. Add &send=true to send a test message and see Meta's raw answer."""
     _check_admin(token)
