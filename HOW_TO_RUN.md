@@ -1,384 +1,355 @@
-# How to run & deploy DontMissThoseMails
+# How to set up DontMissThoseMails (tested with IIIT `iiit.ac.in` accounts)
 
-This guide takes you from nothing to a bot running 24/7 on Render (free) and messaging your WhatsApp.
-It takes about 45 minutes the first time. Do the sections in order.
+This guide sets up your own copy of the bot. It runs 24/7 on free services and messages **your** WhatsApp about
+**your** college mail. Nothing runs on your laptop.
 
-| # | What | Where | Cost |
-|---|------|-------|------|
-| 1 | Get the code + Python | your laptop | free |
-| 2 | Postgres database | Neon (neon.tech) | free |
-| 3 | Outlook access (Microsoft Graph app) | entra.microsoft.com | free |
-| 4 | WhatsApp Cloud API | developers.facebook.com | free test number |
-| 5 | Two Gemini API keys | aistudio.google.com | free tier |
-| 6 | Run locally (optional, recommended) | your laptop | – |
-| 7 | Deploy to Render | render.com | free |
-| 8 | Connect everything + keep-alive pinger | cron-job.org | free |
+It describes the setup that actually works with IIIT Outlook accounts. IIIT doesn't let students approve apps that
+read their mailbox (Microsoft shows **"Need admin approval"**), so instead of reading Outlook directly we:
 
-All settings live in environment variables. The full list with explanations is in
-[`.env.example`](.env.example). Locally they go in a `.env` file; on Render they go in the dashboard.
-
----
-
-## 1. Code + Python
-
-You need **Python 3.11+** and **git**.
-
-**Windows (PowerShell):**
-
-```powershell
-git clone https://github.com/rudra20-6/DontMissThoseMails.git
-cd DontMissThoseMails
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1      # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-pip install -r requirements-dev.txt
-copy .env.example .env             # then fill it in with: notepad .env
-python -m pytest -q                # should print "24 passed"
+```
+IIIT Outlook ──(Outlook forwarding)──▶ a new Gmail "mailbot" ──(IMAP + app password)──▶ the bot on Render
+                                                                                       │
+                           Gemini (free) summarises & classifies ◀─────────────────────┤
+                                                                                       ▼
+                                                  WhatsApp Cloud API (free test number) ──▶ your phone
 ```
 
-**macOS / Linux:**
+**Time:** about 60–90 minutes the first time. **Cost:** ₹0.
 
-```bash
-git clone https://github.com/rudra20-6/DontMissThoseMails.git
-cd DontMissThoseMails
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-cp .env.example .env
-python -m pytest -q
-```
+| Step | What | Where |
+|---|---|---|
+| 1 | Get the code | GitHub |
+| 2 | Create a mailbot Gmail + app password | accounts.google.com |
+| 3 | Forward your IIIT mail to it | outlook.office.com |
+| 4 | Two free Gemini API keys | aistudio.google.com |
+| 5 | WhatsApp Cloud API (test number, permanent token) | developers.facebook.com |
+| 6 | Free Postgres database | neon.tech |
+| 7 | Deploy | render.com |
+| 8 | Connect the WhatsApp webhook (+ Live mode, + subscribe) | developers.facebook.com |
+| 9 | Keep it awake | cron-job.org |
+| 10 | Check everything | your browser |
+| 11 | (Optional) Import last week's mail | outlook.office.com |
 
-Generate an `ADMIN_TOKEN` and put it in `.env`:
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(24))"
-```
-
----
-
-## 2. Database (Neon, free, permanent)
-
-Render's free disk is wiped on every deploy or restart, and Render's own free Postgres is deleted after 30 days.
-Use **Neon** (or Supabase) so your tokens, deadlines and reminders survive.
-
-1. Sign up at <https://neon.tech> and create a project (pick a region close to Singapore/Mumbai).
-2. On the dashboard, click **Connect** and copy the connection string. It looks like
-   `postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require`
-3. Put it in `DATABASE_URL`.
-
-Tables are created automatically on first start. For purely local testing you can leave the default
-`sqlite:///./dontmiss.db`.
+Keep a notes file open while you go. You'll collect about 10 values that go into Render in step 7.
+Every setting is explained in [`.env.example`](.env.example).
 
 ---
 
-## 3. Outlook access (Microsoft Graph)
+## 1. Get the code
 
-The app reads your inbox with **read-only** permission (`Mail.Read`). You register a small "app" with Microsoft once.
+1. Sign in to GitHub and open this repository. Click **Fork** (top right) → **Create fork**. Render deploys from *your* fork.
+2. That's all you need. Running it locally is optional ([Appendix B](#appendix-b-run-locally--tests)).
 
-1. Go to <https://entra.microsoft.com> and sign in with your **college Outlook account**.
-   (Most college tenants allow students to register apps. If it's blocked, see *Plan B* below.)
-2. **Applications → App registrations → New registration**
-   - Name: `DontMissThoseMails`
-   - Supported account types: **Accounts in any organizational directory and personal Microsoft accounts**
-   - Redirect URI: platform **Web**, URL `https://YOUR-APP.onrender.com/auth/microsoft/callback`
-     (add `http://localhost:8000/auth/microsoft/callback` as a second one for local testing: *Authentication → Add URI*)
-3. Copy the **Application (client) ID** into `MS_CLIENT_ID`.
-4. **Certificates & secrets → New client secret** (24 months). Copy the **Value** (not the ID) into `MS_CLIENT_SECRET`.
-   Set a calendar reminder to renew it before it expires.
-5. **API permissions → Add a permission → Microsoft Graph → Delegated** → add `Mail.Read`, `User.Read`, `offline_access`.
-6. `MS_TENANT`: keep `common` if you chose the "any organizational directory and personal accounts" option in step 2.
-   If you registered it as **"this organization only"** (single tenant), set `MS_TENANT` to the **Directory (tenant) ID**
-   from the app's **Overview** page instead. Otherwise login fails with `AADSTS50194 ... not configured as a multi-tenant application`.
-
-You'll actually log in in step 8, after deploying.
-
-**If your college shows "Need admin approval":** your college has blocked user consent. Options:
-
-- **Plan B: copy your college mail into a Gmail account and read that with IMAP.** Details in *3b* below.
-- **Plan C:** ask your IT department to approve the app (it only reads mail). Takes days, but then Graph works.
-
-### 3b. Plan B in detail: college Outlook → Gmail → app (no admin needed)
-
-**1. Make a fresh Gmail account just for this** (e.g. `yourname.mailbot@gmail.com`). A dedicated account means
-only college mail lands there.
-
-**2. Give the app an app password:**
-1. Signed in as the new Gmail account, turn on 2-Step Verification: <https://myaccount.google.com/signinoptions/twosv>
-2. Create an app password: <https://myaccount.google.com/apppasswords>. Name it `DontMissThoseMails` and copy the
-   16 characters (spaces don't matter).
-
-**3. Get your college mail into that Gmail.** Try (a). If Outlook refuses or the mail never arrives, use (b).
-
-(a) **Outlook forwarding** (1 minute):
-1. Open <https://outlook.office.com/mail/options/mail/forwarding>
-2. Tick **Enable forwarding**, enter the Gmail address, tick **Keep a copy of forwarded messages**, and click **Save**.
-3. Send yourself a test mail from another account, or wait for one. If it shows up in Gmail within a minute or two, you're done.
-   If you get a bounce like `550 5.7.520 Access denied, Your organization does not allow external forwarding`,
-   your college blocks this, so use (b).
-
-(b) **Power Automate flow.** It forwards each new mail as a normal email from you, which colleges usually allow:
-1. Open <https://make.powerautomate.com> and sign in with your college account.
-2. **+ Create → Automated cloud flow**. Name it `Forward to mailbot`. For the trigger, search **"When a new email arrives (V3)"**
-   (Office 365 Outlook) → **Create**.
-3. In the trigger, set **Folder** to `Inbox`. Leave the rest as is.
-4. **+ New step / +** → search **"Forward an email (V2)"** (Office 365 Outlook):
-   - **Message Id**: click the field → *Dynamic content* → **Message Id** (from the trigger)
-   - **To**: your Gmail address
-5. **Save**. Then check **My flows → Forward to mailbot → Run history** after the next email arrives. It should say *Succeeded*.
-
-The app detects these forwards: it strips `FW:` and uses the **original** sender (e.g. Moodle), so your priority and ignore rules
-still work.
-
-**4. Point the app at Gmail.** On Render → Environment, set:
-```
-MAIL_PROVIDER=imap
-IMAP_HOST=imap.gmail.com
-IMAP_PORT=993
-IMAP_USERNAME=yourname.mailbot@gmail.com
-IMAP_PASSWORD=the16charapppassword
-IMAP_FOLDER=INBOX
-```
-**Save changes**, wait for the redeploy, then run
-`https://YOUR-APP.onrender.com/admin/poll-now?token=ADMIN_TOKEN`: use a POST from a REST tool, or just wait up to 5 minutes.
-`/status?token=...` → `emails_seen` should start counting up.
-
+Later, to get updates: open your fork on GitHub → **Sync fork** → **Update branch**. Render redeploys automatically.
 
 ---
 
-## 4. WhatsApp Cloud API (free test number)
+## 2. Create a mailbot Gmail + app password
 
-Your free WhatsApp Business setup gives you a **test phone number** that can message up to 5 verified numbers.
-That's all this bot needs, since it only ever messages *you*.
+Use a **new** Gmail account that only receives your college mail, so the bot doesn't read your personal mail.
 
-1. Go to <https://developers.facebook.com> → **My Apps → Create app** → use case **Other** → type **Business**.
-2. In the app dashboard, **Add product → WhatsApp → Set up** (select or create your Meta Business account).
-3. Open **WhatsApp → API Setup**:
-   - Copy **Phone number ID** → `WHATSAPP_PHONE_NUMBER_ID` (it's an ID, not the phone number).
-   - Under **To**, click **Manage phone number list**, add **your personal number** and verify it with the code.
-     Put it (country code, digits only, e.g. `919876543210`) in `WHATSAPP_RECIPIENT`.
-   - The **temporary access token** shown there works for 24 hours, which is fine for a first test.
-4. **Permanent token** (so the bot doesn't die after 24h):
-   1. <https://business.facebook.com> → **Settings → Users → System users → Add** → name `bot`, role **Admin**.
-   2. **Assign assets** → Apps → your app → Full control. Also assign your WhatsApp account.
-   3. **Generate new token** → pick your app → expiry **Never** → permissions `whatsapp_business_messaging`
-      and `whatsapp_business_management` → copy into `WHATSAPP_TOKEN`.
-5. **App settings → Basic → App secret → Show**, then copy it into `WHATSAPP_APP_SECRET` (used to verify that webhooks really come from Meta).
-6. Choose any random string for `WHATSAPP_VERIFY_TOKEN` (you'll paste the same string into Meta in step 8).
+1. Create it: <https://accounts.google.com/signup> (e.g. `yourname.mailbot@gmail.com`).
+2. **Do the next steps in an Incognito/private window signed in only to the mailbot account.** If several Google accounts
+   are signed in, it's easy to end up changing the wrong one (the URL shows `/u/1/`, `/u/2/`, …).
+3. Turn on 2-Step Verification: <https://myaccount.google.com/signinoptions/twosv>
+   - Use a **phone number (SMS) or Google Authenticator** as the second step. With only a passkey or security key,
+     Google hides app passwords.
+   - Continue until it says **"2-Step Verification is on"**.
+4. Create an app password: <https://myaccount.google.com/apppasswords>
+   - Name: `DontMissThoseMails` → **Create** → copy the **16 letters** (spaces don't matter). Google shows it only once.
+   - If it says *"The setting you are looking for is not available for your account"*: 2-Step Verification isn't really on,
+     you're on the wrong account, or the account is brand new (wait a few hours and retry).
 
-### About the 24-hour window (read this)
-
-WhatsApp only lets a business send free-form messages within **24 hours of your last message to it**.
-The bot handles this for you:
-
-- If the window is closed, it queues the messages and sends one **template** message (`hello_world` by default,
-  which is pre-approved on every test number). Reply anything, or tap a button, and it delivers everything it queued.
-- Every digest and reminder has buttons. Tapping one (e.g. **👍 Got it** on the morning digest) keeps the window open,
-  so in practice you'll rarely see the template.
-- Optional, nicer template: in **WhatsApp Manager → Message templates**, create a *Utility* template called
-  e.g. `dmtm_nudge` with body `📬 You have {{1}} new update(s) from DontMissThoseMails. Reply *show* to see them.`
-  Once it's approved, set `WHATSAPP_TEMPLATE_NAME=dmtm_nudge`, `WHATSAPP_TEMPLATE_LANG=en` and `WHATSAPP_TEMPLATE_HAS_PARAM=true`.
-
-Meta may charge for template messages sent outside the window (pricing depends on country and changes over time).
-Replies inside the window are free. Keeping the window open with a daily tap avoids most template sends.
+📝 Note down: `IMAP_USERNAME` = the mailbot address, `IMAP_PASSWORD` = the 16 letters.
 
 ---
 
-## 5. Gemini API keys (free, two of them)
+## 3. Forward your IIIT Outlook mail to the mailbot
 
-Gemini does all the AI work. The app is designed to stay inside the **free tier**:
+1. Open **<https://outlook.office.com/mail/options/mail/forwarding>** (Outlook on the web → Settings → Mail → Forwarding).
+2. Tick **Enable forwarding**, enter the mailbot Gmail address, tick **Keep a copy of forwarded messages**, and click **Save**.
+3. Check it works: when the next mail arrives in Outlook, it should also appear in the mailbot Gmail within a minute or two.
 
-- **One call per email** does everything: category, importance, "has a deadline?", "is an event?",
-  "needs registration?", "is this noise?", *plus* the summary, exact dates, event details and links.
-- **One call per free-text WhatsApp message** ("I submitted the OS assignment", "add DBMS project due Friday").
-- **Zero calls** for button taps, exact commands (`done 12`, `list`, ...), reminders and the digest.
-- Mail from `IGNORE_SENDERS` is dropped without any call.
+The bot handles forwarded mail properly: it removes `FW:` and uses the **original** sender (e.g. Moodle), subject and date.
 
-### Create the keys (important: two different projects)
+<details>
+<summary>If forwarding is blocked (bounce "550 5.7.520 … does not allow external forwarding")</summary>
 
-Google's free quota is **per Google Cloud project, not per key**. Two keys in the same project share one quota.
-
-1. Go to <https://aistudio.google.com/apikey> → **Create API key** → **Create API key in new project**. Copy it.
-2. Click **Create API key** again → again choose **new project** (a *different* one). Copy it.
-3. Put both in `GEMINI_API_KEYS`, comma-separated, no spaces: `GEMINI_API_KEYS=AIzaAAA...,AIzaBBB...`
-
-Don't enable billing on those projects. If a project has billing enabled, it's no longer on the free tier.
-
-### How the rotation works
-
-With `GEMINI_MODELS=auto` the app asks Google (ListModels) which models **each key** can use, and builds this order:
-
-1. key 1: the lightweight models, **Flash-Lite first, then Flash, newest version first** (up to `GEMINI_MAX_MODELS`), then the best **Gemma** model;
-2. key 2: the same list;
-3. and so on for more keys.
-
-On every request it walks that list:
-
-- **Per-minute limit hit** (Google says so in the error): that model sits out for the `retryDelay` Google gives (usually seconds) and the next model is used.
-- **Daily limit hit:** that model on that key is parked until **midnight Pacific time**, when Google resets daily quotas (about 12:30–1:30 PM in India). This is saved in the database, so restarts don't waste requests on it.
-- **Model retired or unavailable:** skipped for 24h. New models appear automatically, since the list is refreshed every 12h.
-- **Bad key:** skipped for an hour, and an error goes in the logs.
-- The app also keeps itself under `GEMINI_RPM` requests per minute per model, so it rarely hits a limit at all.
-- **Everything exhausted** (very unlikely with two projects): new emails wait in a queue and are retried every minute.
-  After `LLM_RETRY_MAX_MINUTES` (45) they are processed with keyword rules, so a deadline is never silently lost.
-  WhatsApp buttons and exact commands keep working with no AI.
-
-See the live picture at `https://YOUR-APP.onrender.com/admin/llm?token=ADMIN_TOKEN`: the models per key,
-their cooldowns, and success/fail counts.
-
-### How much headroom?
-
-Free limits change often and differ per account. Check yours in AI Studio → **Usage / Rate limits**.
-Recently the Flash-Lite models have had a few hundred to ~1,000 requests/day each, Flash models fewer
-(sometimes only ~20/day), and Gemma much more. A busy college inbox is roughly 30–100 emails a day, so with
-2 projects × several models you typically have 10–50× more quota than needed.
-
-**Privacy note:** on the free tier, Google may use prompts to improve its products. Your emails are sent to Gemini
-for summarising. If that bothers you, add sensitive senders to `IGNORE_SENDERS`.
+Use a Power Automate flow instead (included with your college account):
+1. <https://make.powerautomate.com>, signed in with your college account → **+ Create → Automated cloud flow**.
+2. Name `Forward to mailbot`. For the trigger choose **When a new email arrives (V3)** (Office 365 Outlook) → **Create**. Set Folder = **Inbox**.
+3. **+** → **Forward an email (V2)** (Office 365 Outlook): **Message Id** = dynamic content → *Message Id*; **To** = the mailbot address.
+4. **Save**. After the next mail, **My flows → Run history** should say *Succeeded*.
+</details>
 
 ---
 
-## 6. Run locally (optional, recommended)
+## 4. Two free Gemini API keys
 
-```bash
-.\.venv\Scripts\Activate.ps1     # macOS/Linux: source .venv/bin/activate
-# 1) try the brain on the sample emails (only needs GEMINI_API_KEYS)
-python -m scripts.try_email samples/moodle_assignment.txt
-python -m scripts.try_email samples/club_event.txt
+All AI work (summaries, dates, "is this important?", understanding your replies) uses Gemini's **free tier**.
+The bot rotates across the lightweight models (Flash-Lite → Flash → Gemma) and across your keys when one hits a limit.
 
-# 2) run the whole server
-uvicorn app.main:app --reload --port 8000
-```
+**Free quota is per Google Cloud *project*, so each key must be in a different project:**
+1. <https://aistudio.google.com/apikey> → **Create API key** → **Create API key in new project** → copy it.
+2. **Create API key** again → again **in new project** → copy it.
+3. Don't enable billing on these projects (that takes them off the free tier).
 
-Then open:
+📝 Note down: `GEMINI_API_KEYS` = `KEY1,KEY2` (comma, no spaces).
 
-- <http://localhost:8000/health> → `{"ok": true}`
-- `http://localhost:8000/status?token=YOUR_ADMIN_TOKEN` → shows what is configured
-- `http://localhost:8000/auth/microsoft/login?token=YOUR_ADMIN_TOKEN` → connect Outlook (needs the localhost redirect URI from step 3)
-
-Set `WHATSAPP_DRY_RUN=true` in `.env` to print WhatsApp messages in the terminal instead of sending them.
-(WhatsApp *replies* need a public URL, so test two-way chat after deploying, or use a tunnel such as `ngrok http 8000`.)
+Privacy: on the free tier Google may use prompts to improve its products. Add senders you never want sent to Gemini
+to `IGNORE_SENDERS`.
 
 ---
 
-## 7. Deploy to Render (free)
+## 5. WhatsApp Cloud API
 
-1. Push this repo to your GitHub (it's already there if you're reading this on GitHub).
-2. Go to <https://dashboard.render.com> → **New → Blueprint** → connect your GitHub → select this repository.
-   Render reads [`render.yaml`](render.yaml) and creates a free web service called `dontmissthosemails`.
-   *(Alternative: **New → Web Service**, Build command `pip install -r requirements.txt`, Start command
-   `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1`, Health check path `/health`.)*
-3. Fill in the environment variables it asks for (the values from steps 2–5). Then in **Environment** add any extra
-   ones you changed from the defaults in `.env.example`.
-4. After the first deploy, note your URL, e.g. `https://dontmissthosemails.onrender.com`.
-   Set `APP_BASE_URL` to exactly that (no trailing slash) and save; Render redeploys.
-5. Check `https://YOUR-APP.onrender.com/status?token=ADMIN_TOKEN`. `ADMIN_TOKEN` was auto-generated by the
-   blueprint; you can see it under **Environment**.
+The free **test number** Meta gives you can message up to 5 verified numbers. That's all you need, since the bot only talks to you.
 
-> Keep **one** instance and `--workers 1`. The scheduler runs inside the web process; two copies would double-send.
+### 5a. Create the app
+1. <https://developers.facebook.com/apps/> → **Create app** → use case **Other** → type **Business** → give it a name → create.
+   (Create or pick a Meta Business portfolio when asked.)
+2. In the app dashboard: **Add product → WhatsApp → Set up**.
+3. Left menu **WhatsApp → API Setup** (in newer dashboards: **WhatsApp → Step 1. Try it out**):
+   - Copy the **Phone number ID**. It's an ID, *not* the phone number.
+   - Copy the **WhatsApp Business Account ID**. You need it in step 8.
+   - Under **To** → **Manage phone number list** → add **your own WhatsApp number** and enter the code WhatsApp sends you.
+   - Note the test number shown as **From** (e.g. `+1 555 …`). That's the number you'll chat with.
+
+📝 Note down: `WHATSAPP_PHONE_NUMBER_ID`, the WABA ID, and `WHATSAPP_RECIPIENT` = your number with country code, digits only
+(e.g. `91XXXXXXXXXX`).
+
+### 5b. Permanent access token
+The token on the API Setup page expires after 24 hours. Make one that never expires:
+1. <https://business.facebook.com/settings/system-users> → **Add** → name `bot`, role **Admin** → create.
+2. Select `bot` → **Assign assets** → **Apps** → your app → **Full control** → assign. (If offered, also assign your WhatsApp account.)
+3. **Generate token** → pick your app → expiry **Never** → permissions **`whatsapp_business_messaging`** and
+   **`whatsapp_business_management`** → **Generate** → copy it.
+
+📝 Note down: `WHATSAPP_TOKEN`.
+
+### 5c. App secret
+App dashboard → **App settings → Basic** → **App secret** → **Show** → copy.
+📝 Note down: `WHATSAPP_APP_SECRET`.
 
 ---
 
-## 8. Connect everything
+## 6. Free Postgres database (Neon)
 
-### 8a. WhatsApp webhook (so the bot can read your replies)
+Render's free disk is wiped on every deploy, so the bot keeps its state (deadlines, reminders, queue) in Neon.
+1. <https://neon.tech> → sign up → create a project (region: Singapore / closest).
+2. **Connect** → copy the connection string (`postgresql://…neon.tech/neondb?sslmode=require`).
 
-Meta dashboard → your app → **WhatsApp → Configuration → Webhook → Edit**:
+📝 Note down: `DATABASE_URL`.
 
-- Callback URL: `https://YOUR-APP.onrender.com/webhook/whatsapp`
-- Verify token: the value of `WHATSAPP_VERIFY_TOKEN`
-- Click **Verify and save**, then under **Webhook fields** click **Subscribe** on `messages`.
+---
 
-**Two more things Meta needs before real messages reach the app** (the dashboard's *Test* button works without them, your phone's messages don't):
+## 7. Deploy on Render
 
-1. **Switch the app to Live.** Go to App settings → Basic (`https://developers.facebook.com/apps/APP_ID/settings/basic/`),
-   set **Privacy Policy URL** to `https://YOUR-APP.onrender.com/privacy` (the app serves this page), pick a Category, and **Save changes**.
-   Then flip **App Mode: Development → Live** at the top of the dashboard.
-2. **Subscribe your WhatsApp Business Account to the app.** Copy the **WhatsApp Business Account ID** from WhatsApp → *Step 1. Try it out*
-   (it is *not* the Phone number ID). Then open <https://developers.facebook.com/tools/explorer/>, pick your app, paste `WHATSAPP_TOKEN`
-   as the access token, choose **POST**, enter `<WABA_ID>/subscribed_apps`, and click **Submit**. It should return `{"success": true}`.
+1. Generate an admin password for the bot's admin pages. It must be URL-safe. In PowerShell (or any terminal with Python):
+   ```powershell
+   py -c "import secrets; print(secrets.token_urlsafe(24))"
+   ```
+   📝 Note down: `ADMIN_TOKEN`.
+2. <https://dashboard.render.com> → **New → Blueprint** → connect GitHub → pick **your fork**.
+   Render reads [`render.yaml`](render.yaml) and asks for these values:
 
-Now send **hi** from your phone to the test number. The bot replies with the help menu.
-(Also try `curl -X POST "https://YOUR-APP.onrender.com/admin/test-whatsapp?token=ADMIN_TOKEN"`.)
+   | Key | Value |
+   |---|---|
+   | `ADMIN_TOKEN` | from step 7.1 |
+   | `APP_BASE_URL` | leave for now, see step 7.3 |
+   | `DATABASE_URL` | Neon connection string |
+   | `IMAP_USERNAME` | mailbot Gmail address |
+   | `IMAP_PASSWORD` | 16-letter app password |
+   | `GEMINI_API_KEYS` | `KEY1,KEY2` |
+   | `WHATSAPP_TOKEN` | permanent token |
+   | `WHATSAPP_PHONE_NUMBER_ID` | Phone number ID |
+   | `WHATSAPP_RECIPIENT` | your number, digits only |
+   | `WHATSAPP_APP_SECRET` | App secret |
 
-### 8b. Connect Outlook
+   `WHATSAPP_VERIFY_TOKEN` is generated for you (see it later under **Environment**), and `MAIL_PROVIDER=imap` is preset.
+3. After the first deploy, copy your URL (e.g. `https://dontmissthosemails-abcd.onrender.com`). Go to **Environment**,
+   set `APP_BASE_URL` to it (no trailing slash), and **Save changes**.
+4. Check: open `https://YOUR-APP.onrender.com/health` → `{"ok":true,…}`.
 
-Open in your browser: `https://YOUR-APP.onrender.com/auth/microsoft/login?token=ADMIN_TOKEN`
-→ sign in with your college account → accept → you'll see **✅ Outlook connected!**
-The refresh token is stored in the database and renewed automatically.
+Keep **one** instance. The scheduler runs inside the web process.
 
-Force a first check: `curl -X POST "https://YOUR-APP.onrender.com/admin/poll-now?token=ADMIN_TOKEN"`
+---
 
-### 8c. Keep it awake (pinger)
+## 8. Connect the WhatsApp webhook
 
-Render free services sleep after 15 minutes without traffic. Use a free pinger that **also drives the jobs**:
+This lets the bot *receive* your messages and button taps. All four parts are needed: the dashboard's "Test" button
+works without 8c/8d, but real messages from your phone don't.
 
-1. Sign up at <https://cron-job.org> → **Create cronjob**
-2. URL: `https://YOUR-APP.onrender.com/cron/tick?token=ADMIN_TOKEN`
-3. Schedule: **every 5 minutes** → Save.
+### 8a. Callback URL
+App dashboard → **WhatsApp → Configuration** (or **Configure webhooks**):
+- **Callback URL:** `https://YOUR-APP.onrender.com/webhook/whatsapp`
+- **Verify token:** the `WHATSAPP_VERIFY_TOKEN` value from Render → Environment
+- **Verify and save.** If it fails, open `/health` first (to wake the app), then retry.
 
-That call wakes the app *and* runs a full cycle (check mail, send due reminders, digest, deliver queued messages).
-The app also has its own 1-minute internal scheduler while awake. UptimeRobot pinging `/health` every 5 minutes
-works too, but `/cron/tick` is more robust.
+### 8b. Subscribe to messages
+Same page → **Webhook fields** → row **`messages`** → toggle **Subscribe**.
 
-Render's free tier gives 750 instance-hours a month, enough for one service running 24/7.
+### 8c. Switch the app to Live
+1. **App settings → Basic**: set **Privacy Policy URL** to `https://YOUR-APP.onrender.com/privacy` (the bot serves this page),
+   pick a **Category** (e.g. *Utility & productivity*), add an icon if asked → **Save changes**.
+2. At the top of the dashboard, flip **App Mode: Development → Live**.
+
+### 8d. Subscribe your WhatsApp account to the app
+1. Open <https://developers.facebook.com/tools/explorer/>.
+2. On the right: **Meta App** = your app; paste `WHATSAPP_TOKEN` into **Access Token**.
+3. Method **POST**, path `YOUR_WABA_ID/subscribed_apps`, using the **real number** from step 5a. Don't leave the words
+   `THE_WABA_ID` in; that gives *"Object with ID … does not exist"*. Click **Submit** → `{"success": true}`.
+4. (Optional) Method **GET**, same path → your app appears under `data`.
+
+Don't know your WABA ID? In the Explorer: **GET** `debug_token?input_token=<paste the same token>` → look under
+`granular_scopes` → `whatsapp_business_management` → `target_ids`.
+
+The ⚠️ next to the token in the Explorer ("User: bot … not you") is fine. It just means the token belongs to the system user.
+
+### 8e. Test
+From your phone, send **`hi`** to the test number (the **From** number in step 5a). You should get the help menu back.
+If not, see [The bot doesn't reply](#the-bot-doesnt-reply-to-hi).
+
+---
+
+## 9. Keep it awake (cron-job.org)
+
+Render's free tier sleeps after 15 minutes without traffic. A free pinger keeps it awake, and each ping also makes the bot
+check mail and send due reminders.
+
+1. First test in your browser: `https://YOUR-APP.onrender.com/cron/tick?token=ADMIN_TOKEN` → `{"queued":true}`.
+2. <https://console.cron-job.org/signup> → sign up, confirm your email, log in.
+3. **Cronjobs → CREATE CRONJOB**
+   - **Title:** `DontMissThoseMails tick`
+   - **URL:** `https://YOUR-APP.onrender.com/cron/tick?token=ADMIN_TOKEN`
+   - **Execution schedule:** every **5 minutes**
+   - **Advanced:** method `GET`, timeout at the maximum (30 s). A timeout while Render wakes up is harmless.
+   - **Notifications:** turn off "on failure" (or require several in a row), keep "when the job is disabled".
+   - **CREATE**
+4. After ~10 minutes, the job's **History** shows **200 OK** runs.
+
+---
+
+## 10. Check everything
+
+Open these (replace `ADMIN_TOKEN`):
+
+| URL | You should see |
+|---|---|
+| `/status?token=ADMIN_TOKEN` | `"mail_provider": "imap"`, `"gemini_keys": 2`, `"whatsapp_configured": true`; `emails_seen` grows as mail arrives |
+| `/admin/whatsapp-check?token=ADMIN_TOKEN&send=true` | `2_token_and_phone_id.ok: true`, and a 🧪 test message on your phone |
+| `/admin/llm?token=ADMIN_TOKEN` | the Gemini models each key rotates through, with cooldowns |
+
+When a new college mail arrives, its WhatsApp summary should follow within about 5 minutes. The first **daily digest**
+comes the next morning at 08:00.
+
+---
+
+## 11. (Optional) Import last week's mail
+
+Your mailbot only has mail from the moment forwarding started. To give the bot the last week once:
+
+1. Open <https://outlook.office.com/mail/>.
+2. Tick the first mail (hover → circle), scroll to a week ago, and **Shift+click** the last one.
+3. Click **Forward**. Outlook attaches them all to one email. Send it to the mailbot. Do batches of ~40 (Gmail's 25 MB limit).
+
+The bot unpacks each attached mail, analyses them quietly (about 20 per minute), then sends **one catch-up message**:
+upcoming deadlines, events you can still join (reply `interested <id>`), and important notices. Old/past items are skipped,
+and reminders start for everything upcoming. Mails that were also forwarded individually are only processed once.
 
 ---
 
 ## Everyday use
 
-Just use WhatsApp. Send **help** at any time. See [FEATURES.md](FEATURES.md) for everything it does.
+Talk to the bot on WhatsApp. `help` shows all commands. See [FEATURES.md](FEATURES.md) for everything it does.
 
-Useful admin URLs (all need `?token=ADMIN_TOKEN`):
+Admin URLs (all need `?token=ADMIN_TOKEN`):
 
 | URL | What |
-|-----|------|
+|---|---|
 | `GET /status` | configuration + counts |
 | `GET /admin/items` | last 50 tracked items |
-| `GET /admin/whatsapp-check` | step-by-step WhatsApp diagnosis (`&send=true` sends a test message) |
-| `GET /admin/llm` | Gemini models per key, cooldowns (per-minute / daily), success counts |
 | `GET /admin/digest` | preview today's digest |
-| `POST /admin/poll-now` | check mail right now |
+| `GET /admin/whatsapp-check` | step-by-step WhatsApp diagnosis (`&send=true` sends a test) |
+| `GET /admin/llm` | Gemini models per key, cooldowns, success counts |
+| `POST /admin/poll-now` | check mail now |
+| `POST /admin/rescan?days=7` | re-read the mailbox from N days ago (quiet import + one catch-up summary) |
 | `POST /admin/test-whatsapp` | send a test message |
-| `GET /cron/tick` | run one cycle (for the pinger) |
+| `GET /cron/tick` | run one cycle (used by the pinger) |
 
 ## Tuning
 
-Everything in the *Behaviour tuning* block of `.env.example` can be changed on Render → Environment, e.g.:
+Change these on Render → Environment (full list in [`.env.example`](.env.example)):
 
-- Too many mails? Raise `IMPORTANCE_IMMEDIATE_MIN` to `2.5` (only high/critical get pushed; the rest go to the digest),
-  and add noisy senders to `IGNORE_SENDERS`.
-- Missing things? Lower it to `1.0` and add senders to `PRIORITY_SENDERS`.
-- Different reminder rhythm: `DEADLINE_OFFSETS_HOURS=120,48,24,3`.
+| Setting | Default | Use it to |
+|---|---|---|
+| `IGNORE_SENDERS` | – | drop noisy senders without any AI call, e.g. `linkedin,newsletter,noreply@quora` |
+| `PRIORITY_SENDERS` | `moodle,lms,dean,registrar,academic,exam,office` | always treat these as important |
+| `IMPORTANCE_IMMEDIATE_MIN` | `1.5` | raise to `2.5` if you get too many messages (the rest go to the digest) |
+| `DEADLINE_OFFSETS_HOURS` | `72,24,6,1` | when deadline reminders fire |
+| `REGISTRATION_OFFSETS_HOURS` | `48,24,6,1` | reminders before an event's registration closes |
+| `EVENT_NAG_HOUR` | `18` | daily "have you registered?" nudge for events you're interested in |
+| `DIGEST_HOUR` | `8` | daily digest time |
+| `QUIET_HOURS_START` / `_END` | `23` / `7` | no non-urgent messages at night |
 
 ## Troubleshooting
 
 ### The bot doesn't reply to "hi"
+Open `/admin/whatsapp-check?token=ADMIN_TOKEN&send=true` right after sending `hi` (its log resets when Render restarts):
 
-Open `https://YOUR-APP.onrender.com/admin/whatsapp-check?token=ADMIN_TOKEN&send=true` and read it top to bottom:
-
-| What you see | Meaning → fix |
+| What you see | Fix |
 |---|---|
-| `2_token_and_phone_id.ok: false`, code 190 | Token expired (the temporary one lasts 24h) → create the permanent System User token (step 4.4), update `WHATSAPP_TOKEN` on Render. |
-| `2_token_and_phone_id.ok: false`, code 100 | `WHATSAPP_PHONE_NUMBER_ID` is wrong. Use the **Phone number ID** from WhatsApp → API Setup, not the phone number. |
-| `5_test_send: FAILED ... 131030` | Your number isn't in the test number's allowed list → API Setup → *To* → Manage phone number list → add + verify it. |
-| `5_test_send` accepted, but nothing arrives on the phone | See `last async delivery failure`. `131047` = 24h window closed → send any message from your phone first. |
-| `3_webhook: NONE` | **Meta isn't calling the app.** Usually: (a) the `messages` webhook field isn't **subscribed** (Meta → WhatsApp → Configuration → Webhook fields → `messages` → Subscribe), (b) the Callback URL is wrong, or (c) you're messaging the wrong number. Send the message **from your personal WhatsApp to the test number** shown in API Setup. |
-| `3_webhook ... accepted: false` | The message came from a number different from `WHATSAPP_RECIPIENT`; the `reason` shows both. Fix `WHATSAPP_RECIPIENT` (country code + number, digits only, e.g. `919876543210`). |
-| `last rejected webhook: bad X-Hub-Signature-256` | `WHATSAPP_APP_SECRET` is wrong → copy it again (App settings → Basic) or clear it. |
+| `{"detail":"Not Found"}` | You're on an old deploy, or the URL is mistyped. Check Render finished deploying. |
+| `2_token_and_phone_id.ok: false`, code 190 | Token expired → make the permanent token (5b) and update `WHATSAPP_TOKEN`. |
+| `2_token_and_phone_id.ok: false`, code 100 | Wrong `WHATSAPP_PHONE_NUMBER_ID` (use the ID, not the phone number). |
+| `5_test_send: FAILED … 131030` | Your number isn't in the test number's allowed list (5a). |
+| `3_webhook: NONE` | Meta isn't calling the bot. Do **8b, 8c and 8d**, and message the **test number**, not yourself. |
+| `3_webhook … accepted: false` | The message came from a different number than `WHATSAPP_RECIPIENT`; the `reason` shows both. |
+| `last rejected webhook: bad X-Hub-Signature-256` | Wrong `WHATSAPP_APP_SECRET` → copy it again (5c). |
+| test send works, nothing arrives later | `131047` in `last async delivery failure` = 24h window closed → send the bot any message. |
 
-Tip: to test the webhook without your phone, go to Meta → WhatsApp → Configuration → Webhook fields → `messages` → **Test**.
-That sends a sample payload from a fake number, so `3_webhook` should show it with `accepted: false`. That proves the webhook reaches the app.
-
-Render's free tier also sleeps: the first message after a quiet period can take ~30–60 s while the app wakes up.
-Meta retries, so the reply may arrive late. The cron-job.org pinger (step 8c) prevents this.
+### Other problems
 
 | Symptom | Fix |
-|---------|-----|
-| `/status` says `outlook_connected: false` | Redo 8b. Check the redirect URI in Entra matches `APP_BASE_URL` + `/auth/microsoft/callback` exactly. |
-| `AADSTS50194 ... not configured as a multi-tenant application` | Set `MS_TENANT` on Render to the **Directory (tenant) ID** from the app registration Overview page. |
-| `AADSTS50011` redirect URI mismatch | App registration → Authentication → Web → add `https://YOUR-APP.onrender.com/auth/microsoft/callback` exactly. |
-| `AADSTS65001` / "Need admin approval" | Your college blocks consent → use Plan B (step 3b: Gmail + IMAP). |
-| No WhatsApp messages at all | Check logs on Render. `WhatsApp HTTP 401` → token expired (make the permanent token, step 4.4). `131030` → your number isn't in the test recipient list. |
-| Messages arrive only after you text the bot | The 24h window was closed. That's expected; see "About the 24-hour window". |
-| Webhook "verify" fails in Meta | `WHATSAPP_VERIFY_TOKEN` differs, or the app was asleep. Open `/health` first, then retry. |
-| Everything lost after a redeploy | You are on SQLite. Set `DATABASE_URL` to Neon (step 2). |
-| Logs show `AI quota exhausted, N email(s) stay queued` | All keys/models are at their limit. Check `/admin/llm`. Make sure your two keys are in **different projects**. Emails are handled with keyword rules after 45 min. |
-| `/admin/llm` shows only fallback model names | ListModels failed: check that the key is valid (AI Studio → API keys). |
+|---|---|
+| `/status` shows `emails_seen: 0` for a long time | Check the mail reaches the mailbot Gmail (step 3), and `IMAP_USERNAME` / `IMAP_PASSWORD` (the app password, not your normal password). Render logs show `IMAP error: …` if the login fails. |
+| `/cron/tick` says `bad or unset ADMIN_TOKEN` | The token has `+ / =` characters → generate a URL-safe one (7.1) and update it. |
+| Logs: `AI quota exhausted, N email(s) stay queued` | All Gemini keys/models hit their free limit. Check `/admin/llm`, and make sure the two keys are in **different projects**. After 45 min, queued mail is handled with keyword rules. |
+| Messages only arrive after you text the bot | WhatsApp's 24h rule: businesses can only message you freely within 24h of your last message. The bot queues messages and sends one template to wake you. Tapping **👍 Got it** on the morning digest keeps the window open. |
+| Webhook "Verify and save" fails | `WHATSAPP_VERIFY_TOKEN` differs, or the app was asleep: open `/health` first and retry. |
+
+---
+
+## Appendix A: Reading Outlook directly (only if IIIT IT approves)
+
+This skips Gmail entirely, but needs an admin to approve the app. Students get **"Need admin approval"** otherwise.
+
+1. <https://entra.microsoft.com> (college account) → **App registrations → New registration**. Redirect URI (Web):
+   `https://YOUR-APP.onrender.com/auth/microsoft/callback`.
+2. Copy the **Application (client) ID** → `MS_CLIENT_ID`. **Certificates & secrets → New client secret** → the *Value* → `MS_CLIENT_SECRET`.
+3. **API permissions → Microsoft Graph → Delegated:** `Mail.Read`, `User.Read`, `offline_access`.
+4. If you registered it as **single-tenant**, set `MS_TENANT` to the **Directory (tenant) ID** from the Overview page,
+   or you get `AADSTS50194 … not configured as a multi-tenant application`.
+5. Ask IT to grant admin consent for your Application ID (read-only `Mail.Read`).
+6. Set `MAIL_PROVIDER=graph`, then open `https://YOUR-APP.onrender.com/auth/microsoft/login?token=ADMIN_TOKEN` and sign in.
+7. For a one-time import of older mail: `POST /admin/rescan?token=ADMIN_TOKEN&days=7`.
+
+## Appendix B: Run locally / tests
+
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/YOUR-USERNAME/DontMissThoseMails.git
+cd DontMissThoseMails
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+pip install -r requirements-dev.txt
+copy .env.example .env                # fill it in: notepad .env
+python -m pytest -q                   # all tests should pass
+python -m scripts.try_email samples\club_event.txt   # see what the AI makes of an email (needs GEMINI_API_KEYS)
+uvicorn app.main:app --reload         # http://localhost:8000/health
+```
+**macOS / Linux:** same, with `python3 -m venv .venv && source .venv/bin/activate` and `cp .env.example .env`.
+
+Set `WHATSAPP_DRY_RUN=true` to print WhatsApp messages in the terminal instead of sending them.
+Receiving WhatsApp replies locally needs a public URL (e.g. `ngrok http 8000`).
+Set `TEST_DATABASE_URL=postgresql://…` to run the test suite against Postgres instead of SQLite.

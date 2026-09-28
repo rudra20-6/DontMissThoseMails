@@ -1,67 +1,20 @@
 # DontMissThoseMails: Features
 
-An always-on assistant that reads your college Outlook inbox, decides what matters, condenses it, and
-messages you on WhatsApp. It keeps reminding you about deadlines, and about event registrations you
-said you were interested in, until you tell it you're done.
+A personal assistant that watches your college inbox, decides what matters, condenses it into a few lines, and sends it
+to your WhatsApp. It keeps reminding you about deadlines, and about events you said you're interested in, until you tell
+it you're done.
+
+Setup: [HOW_TO_RUN.md](HOW_TO_RUN.md).
 
 ---
 
-## 1. Inbox watching
+## What you get on WhatsApp
 
-- Checks your Outlook inbox every **5 minutes** (`MAIL_POLL_MINUTES`) via Microsoft Graph (read-only), or any IMAP mailbox.
-- On first start it looks back 24 hours (`MAIL_LOOKBACK_HOURS`), so nothing that arrived just before setup is missed.
-- Every email is processed **exactly once** (deduplicated by Message-ID), even across restarts.
-- HTML emails are converted to clean text, and link targets are kept (registration forms, Moodle links).
-
-## 2. One AI call per email: triage + condensing (Gemini, free tier)
-
-A single Gemini request per email returns everything at once:
-
-| Field | Used for |
-|-------|----------|
-| `category` | coursework · academic notice · event · opportunity · campus notice · personal · newsletter/promo · other |
-| `importance` (0 ignore → 1 low → 2 medium → 3 high → 4 critical) | push now / digest / drop |
-| `has_deadline` | create a tracked deadline |
-| `is_event`, `needs_registration` | create a tracked event, ask if you're interested, registration reminders |
-| `is_noise` | drop promos and automated junk |
-| `title`, `summary` | ≤ 8-word title + 2–4 sentences: what, when/where, what you must do |
-| `deadlines` | up to 3, with exact local date/time ("this Friday", "EOD", "tomorrow" resolved; 23:59 if only a date) |
-| `event` | name, start/end, venue, registration deadline, registration link |
-| `primary_link` | the submission / registration / details link |
-
-Fixed rules run **first** and cost nothing:
-- `IGNORE_SENDERS` / `IGNORE_SUBJECT_KEYWORDS` → dropped without any AI call.
-- `PRIORITY_SENDERS` (default: moodle, lms, dean, registrar, academic, exam, office) → never treated as noise, importance at least *high*.
-
-Thresholds decide the action:
-- **Notify now:** importance ≥ `IMPORTANCE_IMMEDIATE_MIN` (1.5), or it has a deadline / is an event.
-- **Daily digest only:** relevant but low priority.
-- **Drop:** noise, or importance below `IMPORTANCE_DROP_BELOW`.
-
-Every decision is stored with the email for auditing (`/admin/items`, database `emails.decision`).
-
-## 3. Free-tier model and key rotation
-
-- Works with **multiple free Gemini keys** (`GEMINI_API_KEYS`). Use keys from different Google Cloud projects: quota is per project.
-- Per key, it discovers the available **lightweight models** automatically: Flash-Lite first, then Flash (newest first),
-  then **Gemma** as a high-volume last resort. New or retired models are picked up without code changes.
-- Order: all of key 1's models → all of key 2's models → …
-- **Per-minute** limit → that model pauses for Google's `retryDelay`, next model is used immediately.
-  **Daily** limit → that model is parked until Google's reset (midnight Pacific), remembered across restarts.
-- A built-in per-model rate limiter (`GEMINI_RPM`) avoids hitting limits in the first place.
-- "Thinking" is turned off/low on every call (not needed for extraction, saves tokens and time).
-- If *everything* is exhausted: emails wait in a queue (nothing lost) and retry every minute. After 45 min they
-  fall back to keyword rules. Buttons and commands work without AI.
-- `/admin/llm` shows the live rotation state.
-
-## 4. WhatsApp notifications, categorised
-
-Each message starts with a category emoji, a priority dot and a short ID you can refer to:
-
+### 📚 Deadlines (assignments, quizzes, submissions, fees, forms)
 ```
 📚 Coursework 🟠 high  ·  #12
-*OS Assignment 3: Scheduling Simulator*
-_from Moodle_
+OS Assignment 3: Scheduling Simulator
+from Moodle
 
 Assignment 3 is released on Moodle. Submit a single zip named <rollno>_A3.zip. 20% late penalty per day.
 
@@ -69,77 +22,132 @@ Assignment 3 is released on Moodle. Submit a single zip named <rollno>_A3.zip. 2
 🔗 https://moodle…
 [✅ Done] [⏳ Snooze 3h] [🗑️ Ignore]
 ```
+- Reminders **72h, 24h, 6h and 1h** before the deadline (configurable). The last ones are 🚨 and ignore quiet hours.
+- Each reminder is sent **once**. If the bot was asleep during a slot, you get one catch-up reminder, not a burst.
+- If you learn about a deadline late (say 5h before), earlier slots are skipped.
+- When the deadline passes, you get one "⌛ deadline passed" message, then it stops.
+- Tap **✅ Done** or send `done 12` and the reminders stop.
 
-Categories: 📚 Coursework · 🏛️ Academic notice · 🎉 Event · 💼 Opportunity · 🏠 Campus notice · ✉️ Personal · 📩 Other.
-Priority: 🔴 critical · 🟠 high · 🟡 medium · ⚪ low.
-
-## 5. Deadline tracking & reminders
-
-- Each deadline found becomes a tracked item (up to 3 per email, e.g. "abstract due" + "final report due").
-- Reminders at **72h, 24h, 6h and 1h** before the deadline (`DEADLINE_OFFSETS_HOURS`).
-- Reminders in the last 6 hours are marked 🚨 and **ignore quiet hours**.
-- Each reminder is sent **once**. If the server was asleep and missed a slot, it sends one catch-up, not a burst.
-- If you learn about a deadline late (e.g. 5 hours before), earlier reminder slots are skipped.
-- When the deadline passes you get one "⌛ deadline passed" message, then it stops.
-- Stops immediately when you tap **✅ Done** or send `done 12`.
-
-## 6. Event flow: interest → registration → attendance
-
-1. A new event arrives → the bot sends a summary (when, where, register-by, link) and asks
-   **Are you interested?** `[👍 Interested] [👎 Not interested] [✅ Already registered]`
-2. No answer in 24h → it asks **once more**, then leaves it alone.
+### 🎉 Events (club events, talks, workshops, hackathons, fests)
+1. A new event arrives → summary with **when, where, register-by and the link**, plus
+   **"Are you interested?"** `[👍 Interested] [👎 Not interested] [✅ Already registered]`
+2. No answer in 24h → it asks **once** more.
 3. **Interested** → it keeps reminding you to register:
-   - at **48h, 24h, 6h, 1h** before registration closes (`REGISTRATION_OFFSETS_HOURS`), and
-   - every evening at **18:00** (`EVENT_NAG_HOUR`) until you say you've registered.
-   - Each reminder has `[✅ Registered] [⏳ Tomorrow] [👎 Not going]`.
-4. **Registered** → reminders **24h and 2h** before the event starts (`EVENT_OFFSETS_HOURS`).
-5. Registration closed while you were still "interested" → one message saying so (reply `registered 12` if you did).
-6. Past events are archived automatically.
+   - **48h, 24h, 6h, 1h** before registration closes;
+   - and every evening at **18:00**, until you tap **✅ Registered** (or `registered 12`).
+4. **Registered** → reminders **24h and 2h** before the event starts.
+5. Registration closed while you were still "interested" → one message saying so.
 
-## 7. Daily digest (08:00)
+### 🏛️ Notices and everything else
+- Official notices, exam/timetable changes, opportunities, campus notices: summarised in 2–4 sentences with the key link.
+- Low-priority mail doesn't ping you. It goes into the **daily digest**.
+- Newsletters, promos and automated junk are **dropped**.
 
-- ⏰ Deadlines in the next 7 days (and a count of later ones)
-- 📝 Events waiting for your answer or registration
-- 🎉 Events you're registered for
-- 📬 Low-priority mail held back from instant notifications, one line each
-- Buttons `[👍 Got it] [📋 Full list]`. Tapping one also keeps WhatsApp's 24h window open.
+Every message has a category emoji (📚 coursework · 🏛️ academic notice · 🎉 event · 💼 opportunity · 🏠 campus ·
+✉️ personal · 📩 other), a priority dot (🔴 critical · 🟠 high · 🟡 medium · ⚪ low), and a short **#id** you can refer to.
 
-## 8. Talk to it on WhatsApp
+### ☀️ Daily digest (08:00)
+- ⏰ deadlines in the next 7 days
+- 📝 events waiting for your answer or registration
+- 🎉 events you're registered for
+- 📬 one line per low-priority mail that was held back
+- `[👍 Got it] [📋 Full list]`. Tapping one also keeps WhatsApp's 24h window open (see below).
+
+### 📥 Catch-up import (one time)
+Forward last week's mail to the bot in one go (Outlook attaches them to one email). It unpacks every attached mail
+with its original sender, subject and date, analyses them quietly, and sends **one** catch-up message: upcoming deadlines,
+events you can still join, important notices. Past items and old low-value notices are skipped. Reminders start for
+everything upcoming.
+
+---
+
+## Talking to the bot
 
 | You send | It does |
-|----------|---------|
+|---|---|
 | `help` | command list |
 | `list` | all pending deadlines and events |
 | `done 12` / `submitted 12` | stop reminders for deadline #12 |
-| `registered 12` | mark event registered → pre-event reminders |
+| `registered 12` | event #12 registered → pre-event reminders |
 | `interested 12` / `no 12` | answer an event invite / drop any item |
 | `snooze 12 3h` / `snooze 12 2d` | pause reminders for an item |
-| `details 12` | full card with summary and links |
-| `add OS quiz prep due Monday 9am` | add your own deadline (LLM parses the date) |
+| `details 12` | the full card again, with links |
+| `add DBMS project due Friday 5pm` | add your own deadline or event (AI reads the date) |
 | `digest` | today's digest now |
-| `pause` / `resume` | mute everything except urgent reminders (deadline < 6h, event starting) |
-| *anything else*, e.g. "I submitted the OS assignment" | **one Gemini call** works out the intent *and* which of your items you mean |
+| `pause` / `resume` | mute everything except urgent reminders |
+| anything else, e.g. *"I submitted the OS assignment"* | the AI works out what you mean and which item |
 
-Only messages from `WHATSAPP_RECIPIENT` (you) are accepted; everyone else is ignored.
+Buttons and exact commands are instant and use no AI. Only messages from your own number (`WHATSAPP_RECIPIENT`) are
+accepted; everyone else is ignored.
 
-## 9. Delivery rules
+---
 
-- **Quiet hours** 23:00–07:00 (`QUIET_HOURS_START/END`): non-urgent messages are queued and delivered in the morning.
-- **Pause mode:** everything except urgent reminders is held until `resume`.
-- **24-hour WhatsApp window:** if Meta refuses a message because you haven't messaged recently, it is queued and a single
-  approved template nudges you (at most every 12h). Your next reply or tap delivers the whole queue in order.
-- Failed messages are retried up to 5 times.
+## How it decides (and stays free)
 
-## 10. Built for free hosting
+### Mail intake
+- Reads a Gmail "mailbot" over IMAP every 5 minutes (college Outlook forwards into it), or Outlook directly via
+  Microsoft Graph where IT allows it.
+- **Forwarded mail is unwrapped:** `FW:` is stripped and the **original** sender and date are used, so rules like
+  "Moodle is always important" still work.
+- **Bulk forwards are split** into the original mails (`message/rfc822` attachments).
+- Every mail is stored **before** any AI call, so nothing is lost if the AI is busy. It's processed exactly once
+  (deduped by Message-ID, and by sender + subject + time for mails that arrive twice).
 
-- Single FastAPI process with an internal 1-minute scheduler. `/cron/tick` lets an external pinger (cron-job.org)
-  both keep Render's free tier awake **and** run the jobs, so reminders still fire even if the process slept.
-- All state (OAuth tokens, items, sent-reminder log, outbox) lives in Postgres (Neon free tier), so restarts and redeploys lose nothing.
-- Every job is idempotent and protected by a lock: safe to trigger as often as you like.
-- Webhook signature verification (`WHATSAPP_APP_SECRET`) and an `ADMIN_TOKEN` guard on every admin URL.
+### One AI call per email
+A single Gemini request returns everything:
+- **Classification:** category, importance (0–4), has a deadline? is an event? needs registration? is it junk?
+- **Summary:** title (≤ 8 words) and a 2–4 sentence summary.
+- **Structured data:**
+  - up to 3 deadlines, with exact local date and time ("this Friday", "EOD" resolved; 23:59 if only a date is given);
+  - event details: start, end, venue, registration deadline, link;
+  - the most useful link.
 
-## 11. Developer extras
+Rules run **before** the AI and cost nothing: `IGNORE_SENDERS` / `IGNORE_SUBJECT_KEYWORDS` drop mail outright;
+`PRIORITY_SENDERS` (default `moodle, lms, dean, registrar, academic, exam, office`) are always important.
 
-- `python -m scripts.try_email samples/club_event.txt`: see the models each key rotates through, the AI decision and the WhatsApp preview for any email text.
-- `pytest`: tests covering the reminder engine, command parsing, Gemini key/model rotation (per-minute vs daily 429s, restarts, bad keys, Gemma), the full email → WhatsApp pipeline and the webhook → button flow.
-- `Dockerfile` for Docker-based hosts (Railway, Fly.io, Koyeb, a VPS).
+### Free-tier Gemini, with rotation
+- Several free keys (`GEMINI_API_KEYS`), each from its own Google Cloud project (free quota is per project).
+- Per key, it discovers the lightweight models automatically: **Flash-Lite → Flash (newest first) → Gemma**. Retired or new
+  models are handled with no code change.
+- Order: all of key 1's models, then key 2's, and so on.
+- **Per-minute** limit → that model pauses for Google's `retryDelay` and the next one is used immediately.
+- **Daily** limit → that model is parked until Google's midnight-Pacific reset (remembered across restarts).
+- A built-in limiter stays under the free per-minute limits. "Thinking" is off, which saves tokens and time.
+- If everything is exhausted, mail waits in the queue and retries every minute. After 45 min it falls back to keyword rules.
+- Typical use is a few dozen AI calls a day, far below the free limits of two keys.
+
+---
+
+## Delivery rules
+- **Quiet hours** 23:00–07:00: non-urgent messages are queued and delivered in the morning.
+- **Pause mode:** only urgent reminders get through until `resume`.
+- **WhatsApp 24h window:** WhatsApp only lets a business message you freely within 24h of your last message. If it's closed,
+  messages are queued and a single template nudges you (at most every 12h). Your next reply delivers the whole queue in order.
+- Failed sends are retried up to 5 times.
+
+## Built for free hosting
+- One FastAPI process on Render's free tier, with an internal 1-minute scheduler. `/cron/tick`, hit every 5 minutes by
+  cron-job.org, keeps it awake **and** runs the jobs.
+- All state lives in Neon Postgres (free), so restarts and redeploys lose nothing. New versions add missing database
+  columns automatically.
+- Every job is idempotent and locked, so it's safe to trigger as often as you like.
+
+## Diagnostics
+- `/admin/whatsapp-check`: checks token and phone ID, whether Meta delivered your last message (and why it was ignored),
+  send errors, async delivery failures; `&send=true` sends a test message.
+- `/admin/llm`: models per key, cooldowns (per-minute / daily), success and fail counts.
+- `/status`, `/admin/items`, `/admin/digest`, `/admin/poll-now`, `/admin/rescan?days=N`.
+
+## Security & privacy
+- Admin pages need `ADMIN_TOKEN`; WhatsApp webhooks are signature-checked (`WHATSAPP_APP_SECRET`).
+- Mail bodies are deleted from the database once analysed. Only summaries, dates and links are kept.
+- Email text is sent to Google Gemini (free tier: Google may use it to improve its products). Keep sensitive senders out
+  with `IGNORE_SENDERS`.
+- A copy of your college mail sits in the mailbot Gmail. Use a strong password and keep 2-Step Verification on.
+
+## For developers
+- `python -m scripts.try_email samples/club_event.txt`: the AI decision + WhatsApp preview for any email text.
+- `pytest`: reminder engine, commands, Gemini rotation (per-minute vs daily 429s, restarts, bad keys, Gemma),
+  forwarded/bulk-forwarded mail with a fake IMAP server, catch-up import, DB auto-upgrade, webhook flows.
+  Runs on SQLite, or on Postgres with `TEST_DATABASE_URL`.
+- `Dockerfile` for other hosts (Railway, Fly.io, Koyeb, a VPS).
