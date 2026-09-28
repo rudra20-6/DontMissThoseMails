@@ -7,8 +7,8 @@
 - 📰 Newsletters and promos → dropped. Low-priority mail → one line in the 08:00 daily digest.
 - 💬 Talk to it naturally: *"I submitted the OS assignment"*, *"snooze 12 2d"*, *"add DBMS project due Friday 5pm"*.
 
-**Decisions are made by [Jev](https://thejevai.com)** (typed choice / score / yes-no), **language work by Gemini**
-(summaries, date extraction), and everything else is plain deterministic code.
+**All AI runs on the free Gemini tier.** It rotates across lightweight models (Flash-Lite → Flash → Gemma) and
+multiple free API keys, with one call per email. Reminders, buttons and commands are plain code and use no AI.
 
 | Doc | What's inside |
 |-----|---------------|
@@ -19,20 +19,19 @@
 ## How it works
 
 ```
- Outlook (Graph / IMAP)                                     WhatsApp (Cloud API)
-        │  every 5 min                                          ▲        │ your replies / button taps
-        ▼                                                       │        ▼
- ┌──────────────┐   ┌───────────────┐   ┌───────────────┐   ┌───┴────────────┐   ┌─────────────────┐
- │ rules filter │──▶│  Jev triage   │──▶│ Gemini condense│──▶│ items + notify │◀──│ commands (regex │
- │ ignore/prio  │   │ category,     │   │ summary, dates │   │ quiet hours,   │   │ → Jev intent)   │
- └──────────────┘   │ importance,   │   │ event, links   │   │ 24h window     │   └─────────────────┘
-                    │ deadline? ... │   └───────────────┘   └───────┬────────┘
-                    └───────────────┘                               │ every minute
-                                                           ┌────────▼────────┐
-                                                           │ reminder engine │  deadlines · registration
-                                                           │ + daily digest  │  nags · event start
-                                                           └─────────────────┘
-                              Postgres (Neon) stores tokens, items, reminder log, outbox
+ Outlook (Graph / IMAP) ──every 5 min──▶ rules filter ──▶ queue (DB: nothing lost if quota runs out)
+                                                               │
+                                                               ▼
+                         Gemini, ONE call per email: category · importance · deadline? · event? · noise?
+                                                    + summary · exact dates · event details · links
+                           (key 1: flash-lite → flash → gemma, then key 2: …; per-minute vs daily 429 aware)
+                                                               │
+                                                               ▼
+ WhatsApp  ◀── items + notify (quiet hours, pause, 24h window) ◀── reminder engine + daily digest (every minute)
+    │
+    └─ your replies/buttons ──▶ exact commands (no AI) or one Gemini call for free text
+
+ Postgres (Neon) stores tokens, emails queue, items, reminder log, outbox, quota cooldowns
 ```
 
 ## Project layout
@@ -43,11 +42,11 @@ app/
   scheduler.py         1-minute tick: poll mail → reminders → digest → outbox
   config.py            all settings (env vars)
   models.py, db.py     SQLAlchemy models (SQLite locally, Postgres in production)
-  clients/             jev.py · gemini.py · whatsapp.py
+  clients/             gemini.py (model/key rotation) · whatsapp.py
   mail/                graph.py (Outlook OAuth) · imap.py
   services/
-    decisions.py       ALL decisions: rules → Jev → fallbacks
-    extraction.py      LLM: email → summary, deadlines, event details
+    decisions.py       ALL AI: rules → one Gemini call per email / message
+    extraction.py      structured deadline/event data
     pipeline.py        email → decision → items → first notification
     reminders.py       pure reminder planner + executor
     digest.py          daily digest

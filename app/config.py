@@ -54,14 +54,18 @@ class Settings(BaseSettings):
     whatsapp_template_has_param: bool = False  # True if your template has a single {{1}} body param
     whatsapp_dry_run: bool = False  # log messages instead of sending
 
-    # --- Jev (decisions) ---
-    jev_api_key: str = ""
-    jev_api_base_url: str = "https://thejevai.com"
-    jev_model: str = "typesafe/jev-1.13"
-
-    # --- Gemini (language) ---
+    # --- Gemini (all AI work) ---
+    # Comma-separated keys, tried in order. GEMINI_API_KEY / GEMINI_API_KEY_2 are also accepted.
+    gemini_api_keys: str = ""
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_api_key_2: str = ""
+    gemini_models: str = "auto"  # "auto" = discover lightweight models per key, or a comma-separated list
+    gemini_max_models: int = 4  # how many flash-lite/flash models to rotate through per key
+    gemini_use_gemma: bool = True  # add the best Gemma model as the last fallback per key
+    gemini_rpm: int = 8  # self-imposed requests/minute per (key, model); free tier allows ~10-15
+    gemini_gemma_rpm: int = 20
+    gemini_max_wait_seconds: float = 8  # wait this long for a free RPM slot before moving to the next model
+    llm_retry_max_minutes: int = 45  # emails waiting on quota this long get processed with keyword rules instead
 
     # --- Behaviour ---
     quiet_hours_start: int = 23  # local hour; no messages from this hour...
@@ -71,8 +75,8 @@ class Settings(BaseSettings):
     deadline_offsets_hours: str = "72,24,6,1"  # reminders before a deadline
     event_offsets_hours: str = "24,2"  # reminders before a registered event starts
     registration_offsets_hours: str = "48,24,6,1"  # reminders before a registration deadline
-    importance_immediate_min: float = 1.5  # Jev score (0..4) at/above which a mail is pushed right away
-    importance_drop_below: float = 0.6  # Jev score below which a mail is ignored completely
+    importance_immediate_min: float = 1.5  # importance (0..4) at/above which a mail is pushed right away
+    importance_drop_below: float = 0.6  # importance below which a mail is ignored completely
     ignore_senders: str = ""  # comma separated substrings, e.g. "noreply@linkedin.com,newsletter"
     priority_senders: str = "moodle,lms,dean,registrar,academic,exam,office"  # substrings; always important
     ignore_subject_keywords: str = ""
@@ -81,6 +85,22 @@ class Settings(BaseSettings):
     @classmethod
     def _digits_only(cls, v: str) -> str:
         return "".join(ch for ch in v if ch.isdigit())
+
+    @property
+    def gemini_keys(self) -> list[str]:
+        keys: list[str] = []
+        for raw in (self.gemini_api_keys, self.gemini_api_key, self.gemini_api_key_2):
+            for k in raw.split(","):
+                k = k.strip()
+                if k and k not in keys:
+                    keys.append(k)
+        return keys
+
+    @property
+    def gemini_model_list(self) -> list[str]:
+        if self.gemini_models.strip().lower() in ("", "auto"):
+            return []
+        return [m.strip().removeprefix("models/") for m in self.gemini_models.split(",") if m.strip()]
 
     @property
     def tz(self) -> ZoneInfo:

@@ -38,7 +38,5 @@ services:
         generateValue: true
       - key: WHATSAPP_APP_SECRET
         sync: false
-      - key: JEV_API_KEY
-        sync: false
-      - key: GEMINI_API_KEY
+      - key: GEMINI_API_KEYS
         sync: false

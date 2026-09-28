@@ -1,7 +1,7 @@
 """Handles messages the user sends to the WhatsApp bot.
 
-Button taps and exact commands are parsed deterministically; free text goes to Jev (intent + target
-item as typed choices). Only "add <task>" uses the LLM, to turn a sentence into a date.
+Button taps and exact commands are parsed deterministically (no AI call). Free text and "add <task>"
+cost exactly one Gemini call, which returns the intent, the item meant, and the new task's date.
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from sqlalchemy.orm import Session
 from app import kv
 from app.models import Item
 from app.services import messages, notifier
-from app.services.decisions import classify_intent
+from app.clients.gemini import LLMUnavailable
+from app.services.decisions import Intent, classify_message
 from app.services.digest import build_digest
-from app.services.extraction import parse_user_task
-from app.timeutil import fmt, utcnow
+from app.timeutil import fmt, local, parse_local, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -100,15 +100,23 @@ def handle_message(session: Session, text: str | None = None, button_id: str | N
     parsed = parse_button(button_id) if button_id else None
     if not parsed and text:
         parsed = parse(text)
-    if not parsed and text:
+    ai: Intent | None = None
+    if (not parsed or parsed[0] == "add") and text:
         items = _active_items(session)
-        intent = classify_intent(text, [(i.id, f"{i.kind}: {i.title}") for i in items])
-        log.info("Free-text intent %s -> %s", text, intent)
-        parsed = (intent.intent, intent.item_id, 3.0 if intent.intent == "snooze" else None)
+        try:
+            ai = classify_message(text, [(i.id, f"{i.kind}: {i.title}") for i in items], local(utcnow()).isoformat())
+        except LLMUnavailable:
+            notifier.reply(session, "😵 My AI quota is used up for the moment, so I can only follow exact commands "
+                                    "right now (e.g. *done 12*, *list*). Send *help* for the list.")
+            return
+        log.info("Free-text %r -> %s", text, ai)
+        if parsed and parsed[0] == "add":
+            ai.intent = "add"
+        parsed = (ai.intent, ai.item_id, (ai.snooze_hours or 3.0) if ai.intent == "snooze" else None)
     if not parsed:
         return
     intent, item_id, hours = parsed
-    _execute(session, intent, item_id, hours, text or "")
+    _execute(session, intent, item_id, hours, text or "", ai)
 
 
 def _need_item(session: Session, item_id: int | None, verb: str) -> Item | None:
@@ -119,7 +127,8 @@ def _need_item(session: Session, item_id: int | None, verb: str) -> Item | None:
     return item
 
 
-def _execute(session: Session, intent: str, item_id: int | None, hours: float | None, text: str) -> None:
+def _execute(session: Session, intent: str, item_id: int | None, hours: float | None, text: str,
+             ai: Intent | None = None) -> None:
     if intent in ("help", "hello"):
         notifier.reply(session, ("👋 Hey! I'm watching your inbox.\n\n" if intent == "hello" else "") + messages.HELP)
     elif intent == "list":
@@ -137,7 +146,7 @@ def _execute(session: Session, intent: str, item_id: int | None, hours: float | 
         notifier.reply(session, "🔔 Resumed.")
         notifier.flush_outbox(session, force=True)
     elif intent == "add":
-        _add_task(session, text)
+        _add_task(session, ai)
     elif intent == "mark_done":
         if item := _need_item(session, item_id, "done"):
             item.status = "done"
@@ -171,9 +180,9 @@ def _execute(session: Session, intent: str, item_id: int | None, hours: float | 
             notifier.reply(session, messages.item_card(item))
 
 
-def _add_task(session: Session, text: str) -> None:
-    body = re.sub(r"^\s*add\s+", "", text, flags=re.I)
-    title, due, is_event = parse_user_task(body, utcnow())
+def _add_task(session: Session, ai: Intent | None) -> None:
+    due = parse_local(ai.task_due) if ai else None
+    title, is_event = (ai.task_title or "My task") if ai else "", bool(ai and ai.task_is_event)
     if due is None:
         notifier.reply(session, "🤔 I couldn't find a date in that. Try: *add OS quiz prep due Monday 9am*")
         return

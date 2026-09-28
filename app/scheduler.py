@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.db import session_scope
 from app.services import notifier
 from app.services.digest import maybe_send_daily_digest
-from app.services.pipeline import poll_mail
+from app.services.pipeline import poll_mail, process_pending
 from app.services.reminders import run_reminders
 from app.timeutil import utcnow
 
@@ -37,6 +37,8 @@ def tick(force_poll: bool = False) -> dict:
             with session_scope() as session:
                 kv.put(session, LAST_POLL_KEY, utcnow().isoformat())
             result["mails"] = poll_mail()
+        else:
+            result["mails"] = process_pending()  # retry mail that was waiting for AI quota (free if still exhausted)
         with session_scope() as session:
             result["reminders"] = run_reminders(session)
         with session_scope() as session:

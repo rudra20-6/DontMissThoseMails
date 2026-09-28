@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import func, select
 
 from app import scheduler
+from app.clients.gemini import get_pool
 from app.clients.whatsapp import WhatsAppClient
 from app.config import get_settings
 from app.db import init_db, session_scope
@@ -68,15 +69,16 @@ def status(token: str | None = Query(None)) -> dict:
     with session_scope() as s:
         counts = dict(s.execute(select(Item.status, func.count()).group_by(Item.status)).all())
         emails = s.scalar(select(func.count()).select_from(Email))
+        pending = s.scalar(select(func.count()).select_from(Email).where(Email.action == "pending"))
         queued = s.scalar(select(func.count()).select_from(Outbox).where(Outbox.sent_at.is_(None)))
         paused = notifier.is_paused(s)
     return {
         "mail_provider": settings.mail_provider,
         "outlook_connected": graph.is_connected() if settings.mail_provider == "graph" else None,
         "whatsapp_configured": WhatsAppClient().configured,
-        "jev_configured": bool(settings.jev_api_key),
-        "gemini_configured": bool(settings.gemini_api_key),
-        "emails_processed": emails,
+        "gemini_keys": len(settings.gemini_keys),
+        "emails_seen": emails,
+        "emails_waiting_for_ai_quota": pending,
         "items_by_status": counts,
         "outbox_queued": queued,
         "paused": paused,
@@ -184,6 +186,16 @@ def admin_poll(background: BackgroundTasks, token: str | None = Query(None)) -> 
     _check_admin(token)
     background.add_task(scheduler.tick, True)
     return {"queued": True}
+
+
+@app.get("/admin/llm")
+def admin_llm(token: str | None = Query(None)) -> dict:
+    """Which Gemini models each key rotates through, and their current cooldowns."""
+    _check_admin(token)
+    pool = get_pool()
+    for key in pool.keys:
+        pool.models_for(key)  # trigger discovery so the list is visible
+    return pool.status()
 
 
 @app.get("/admin/digest", response_class=PlainTextResponse)

@@ -13,42 +13,46 @@ said you were interested in, until you tell it you're done.
 - Every email is processed **exactly once** (deduplicated by Message-ID), even across restarts.
 - HTML emails are converted to clean text, and link targets are kept (registration forms, Moodle links).
 
-## 2. Triage: every decision is made by Jev
+## 2. One AI call per email: triage + condensing (Gemini, free tier)
 
-For each email, **one** Jev request asks six typed questions over the same email state:
+A single Gemini request per email returns everything at once:
 
-| Question | Jev type | Used for |
-|----------|----------|----------|
-| `category` | choice | coursework · academic notice · event · opportunity · campus notice · personal · newsletter/promo · other |
-| `importance` | score (ignore → low → medium → high → critical) | push now / digest / drop |
-| `has_deadline` | noul (yes/no probability) | create a tracked deadline |
-| `is_event` | noul | create a tracked event + ask if you're interested |
-| `needs_registration` | noul | registration reminders |
-| `is_noise` | noul | drop promos and automated junk |
+| Field | Used for |
+|-------|----------|
+| `category` | coursework · academic notice · event · opportunity · campus notice · personal · newsletter/promo · other |
+| `importance` (0 ignore → 1 low → 2 medium → 3 high → 4 critical) | push now / digest / drop |
+| `has_deadline` | create a tracked deadline |
+| `is_event`, `needs_registration` | create a tracked event, ask if you're interested, registration reminders |
+| `is_noise` | drop promos and automated junk |
+| `title`, `summary` | ≤ 8-word title + 2–4 sentences: what, when/where, what you must do |
+| `deadlines` | up to 3, with exact local date/time ("this Friday", "EOD", "tomorrow" resolved; 23:59 if only a date) |
+| `event` | name, start/end, venue, registration deadline, registration link |
+| `primary_link` | the submission / registration / details link |
 
-Fixed rules run **before** Jev and cost nothing:
-- `IGNORE_SENDERS` / `IGNORE_SUBJECT_KEYWORDS` → dropped without calling any AI.
+Fixed rules run **first** and cost nothing:
+- `IGNORE_SENDERS` / `IGNORE_SUBJECT_KEYWORDS` → dropped without any AI call.
 - `PRIORITY_SENDERS` (default: moodle, lms, dean, registrar, academic, exam, office) → never treated as noise, importance at least *high*.
 
-Thresholds on Jev's signals decide the action:
-- **Notify now:** importance ≥ `IMPORTANCE_IMMEDIATE_MIN` (1.5 = between low and medium), or it has a deadline / is an event.
+Thresholds decide the action:
+- **Notify now:** importance ≥ `IMPORTANCE_IMMEDIATE_MIN` (1.5), or it has a deadline / is an event.
 - **Daily digest only:** relevant but low priority.
 - **Drop:** noise, or importance below `IMPORTANCE_DROP_BELOW`.
 
-Every decision (all probabilities) is stored with the email for auditing (`/admin/items`, database `emails.decision`).
+Every decision is stored with the email for auditing (`/admin/items`, database `emails.decision`).
 
-**Fallbacks:** if Jev is unreachable or out of credits → Gemini JSON classification → keyword heuristics. The bot never stops.
+## 3. Free-tier model and key rotation
 
-## 3. Condensing: the only part done by the LLM (Gemini)
-
-Only for emails Jev decided to keep, Gemini converts the long email into:
-- a **title** (≤ 8 words) and a **2–4 sentence summary**: what, when/where, what you must do;
-- **deadlines** with exact local date and time (resolves "this Friday", "EOD", "tomorrow"; assumes 23:59 if only a date is given);
-- **event details:** name, start/end, venue, registration deadline, registration link;
-- the most useful **link**.
-
-The LLM is also used when you type **add …** in WhatsApp ("add DBMS project due Friday 5pm" → a date).
-Reminder texts, digests and replies use fixed templates: instant, free, and consistent.
+- Works with **multiple free Gemini keys** (`GEMINI_API_KEYS`). Use keys from different Google Cloud projects: quota is per project.
+- Per key, it discovers the available **lightweight models** automatically: Flash-Lite first, then Flash (newest first),
+  then **Gemma** as a high-volume last resort. New or retired models are picked up without code changes.
+- Order: all of key 1's models → all of key 2's models → …
+- **Per-minute** limit → that model pauses for Google's `retryDelay`, next model is used immediately.
+  **Daily** limit → that model is parked until Google's reset (midnight Pacific), remembered across restarts.
+- A built-in per-model rate limiter (`GEMINI_RPM`) avoids hitting limits in the first place.
+- "Thinking" is turned off/low on every call (not needed for extraction, saves tokens and time).
+- If *everything* is exhausted: emails wait in a queue (nothing lost) and retry every minute. After 45 min they
+  fall back to keyword rules. Buttons and commands work without AI.
+- `/admin/llm` shows the live rotation state.
 
 ## 4. WhatsApp notifications, categorised
 
@@ -114,7 +118,7 @@ Priority: 🔴 critical · 🟠 high · 🟡 medium · ⚪ low.
 | `add OS quiz prep due Monday 9am` | add your own deadline (LLM parses the date) |
 | `digest` | today's digest now |
 | `pause` / `resume` | mute everything except urgent reminders (deadline < 6h, event starting) |
-| *anything else*, e.g. "I submitted the OS assignment" | **Jev** classifies the intent *and* which of your items you mean |
+| *anything else*, e.g. "I submitted the OS assignment" | **one Gemini call** works out the intent *and* which of your items you mean |
 
 Only messages from `WHATSAPP_RECIPIENT` (you) are accepted; everyone else is ignored.
 
@@ -136,6 +140,6 @@ Only messages from `WHATSAPP_RECIPIENT` (you) are accepted; everyone else is ign
 
 ## 11. Developer extras
 
-- `python -m scripts.try_email samples/club_event.txt`: see Jev's decision, Gemini's extraction and the WhatsApp preview for any email text.
-- `pytest`: tests covering the reminder engine, command parsing, Jev response parsing, the full email → WhatsApp pipeline and the webhook → button flow.
+- `python -m scripts.try_email samples/club_event.txt`: see the models each key rotates through, the AI decision and the WhatsApp preview for any email text.
+- `pytest`: tests covering the reminder engine, command parsing, Gemini key/model rotation (per-minute vs daily 429s, restarts, bad keys, Gemma), the full email → WhatsApp pipeline and the webhook → button flow.
 - `Dockerfile` for Docker-based hosts (Railway, Fly.io, Koyeb, a VPS).

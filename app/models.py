@@ -26,8 +26,13 @@ class Email(Base):
     category: Mapped[str] = mapped_column(String(64), default="")
     importance: Mapped[float] = mapped_column(Float, default=0.0)
     decision: Mapped[dict] = mapped_column(JSON, default=dict)  # raw decision signals, for auditing
-    action: Mapped[str] = mapped_column(String(32), default="")  # dropped | digest | notified | error
-    processed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # pending (waiting for AI quota) | dropped | digest | notify
+    action: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    body: Mapped[str] = mapped_column(Text, default="")  # kept only while pending
+    links: Mapped[list] = mapped_column(JSON, default=list)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Item(Base):

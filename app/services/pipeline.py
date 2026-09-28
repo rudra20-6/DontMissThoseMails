@@ -1,80 +1,113 @@
-"""Email -> decision -> items -> WhatsApp notification."""
+"""Email -> (store) -> AI analysis -> items -> WhatsApp notification.
+
+Every new email is first stored as `pending`, then analysed. If Gemini quota is exhausted the email just
+stays pending and is retried on the next tick, so nothing is lost. After LLM_RETRY_MAX_MINUTES it is
+processed with keyword rules instead, so an important mail is never delayed for long.
+"""
 
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.clients.gemini import LLMUnavailable
 from app.config import get_settings
 from app.db import session_scope
 from app.mail.base import MailError, RawEmail, get_mail_source
 from app.models import Email, Item
 from app.services import messages, notifier
-from app.services.decisions import Triage, triage_email
-from app.services.extraction import Extraction, extract_email
+from app.services.decisions import Triage, analyze_email
+from app.services.extraction import Extraction
+from app.textutil import truncate
 from app.timeutil import local, utcnow
 
 log = logging.getLogger(__name__)
+MAX_PER_TICK = 20
 
 
 def poll_mail() -> int:
-    """Fetch new mail and process it. Returns number of processed emails."""
+    """Fetch new mail into the queue, then work through the queue. Returns emails processed."""
     try:
-        emails = get_mail_source().fetch_new()
+        for raw in get_mail_source().fetch_new():
+            ingest(raw)
     except MailError as exc:
         log.warning("Mail fetch failed: %s", exc)
-        return 0
-    count = 0
-    for raw in emails:
-        try:
-            if process_email(raw):
-                count += 1
-        except Exception:  # noqa: BLE001 - one bad email must not stop the rest
-            log.exception("Failed processing email %s", raw.subject)
-    return count
+    return process_pending()
 
 
-def process_email(raw: RawEmail) -> bool:
+def ingest(raw: RawEmail) -> bool:
     with session_scope() as session:
         if session.scalar(select(Email.id).where(Email.message_id == raw.message_id)):
-            return False  # already seen
-        email = Email(
-            message_id=raw.message_id,
-            sender=raw.sender[:500],
-            subject=raw.subject[:1000],
-            received_at=raw.received_at,
-            web_link=raw.web_link,
-        )
-        session.add(email)
-        session.flush()
+            return False
+        session.add(Email(
+            message_id=raw.message_id, sender=raw.sender[:500], subject=raw.subject[:1000],
+            received_at=raw.received_at, web_link=raw.web_link, body=truncate(raw.body, 20000),
+            links=raw.links[:20], action="pending",
+        ))
+        return True
 
-        triage = triage_email(raw.sender, raw.subject, raw.body, local(raw.received_at).isoformat())
+
+def process_pending(limit: int = MAX_PER_TICK) -> int:
+    with session_scope() as session:
+        ids = session.scalars(
+            select(Email.id).where(Email.action == "pending").order_by(Email.received_at).limit(limit)
+        ).all()
+    done = 0
+    for email_id in ids:
+        try:
+            process_one(email_id)
+            done += 1
+        except LLMUnavailable as exc:
+            log.warning("AI quota exhausted, %d email(s) stay queued: %s", len(ids) - done, exc)
+            break
+        except Exception:  # noqa: BLE001 - one bad email must not block the queue
+            log.exception("Failed processing email %s", email_id)
+            with session_scope() as session:
+                email = session.get(Email, email_id)
+                email.attempts += 1
+                if email.attempts >= 3:
+                    email.action = "error"
+    return done
+
+
+def process_one(email_id: int) -> None:
+    s = get_settings()
+    with session_scope() as session:
+        email = session.get(Email, email_id)
+        if email is None or email.action != "pending":
+            return
+        waited = utcnow() - (email.created_at or utcnow())
+        allow_heuristic = waited >= timedelta(minutes=s.llm_retry_max_minutes)
+        triage, ext = analyze_email(email.sender, email.subject, email.body, local(email.received_at).isoformat(),
+                                    email.links or [], allow_heuristic=allow_heuristic)
         email.category = triage.category
         email.importance = triage.importance
         email.decision = triage.to_dict()
-
         action = decide_action(triage)
         email.action = action
-        log.info("Mail %r -> %s (%s, importance %.2f via %s)", raw.subject, action, triage.category,
+        email.processed_at = utcnow()
+        log.info("Mail %r -> %s (%s, importance %.0f via %s)", email.subject, action, triage.category,
                  triage.importance, triage.source)
-        if action == "dropped":
-            return True
-
-        ext = extract_email(raw.sender, raw.subject, raw.body, raw.received_at, raw.links, triage.category)
+        body, links = email.body, email.links or []
+        email.body = ""  # don't keep mail bodies around once analysed
+        if action == "dropped" or ext is None:
+            email.action = "dropped"
+            return
+        raw = RawEmail(email.message_id, email.sender, email.subject, email.received_at, body, email.web_link, links)
         items = build_items(session, email, triage, ext, raw)
         for item in items:
             item.in_digest = action == "digest"
         session.flush()
         if action == "notify":
             for item in items:
-                send_new_item(session, item, _short_sender(raw.sender))
-        return True
+                send_new_item(session, item, _short_sender(email.sender))
 
 
 def decide_action(t: Triage) -> str:
-    """Thresholds on Jev's signals -> dropped | digest | notify."""
+    """Thresholds on the AI's signals -> dropped | digest | notify."""
     s = get_settings()
     actionable = t.has_deadline >= 0.5 or (t.is_event >= 0.5 and t.importance >= 1.0)
     if t.is_noise >= 0.7 and t.importance < 2.5:
@@ -94,19 +127,10 @@ def build_items(session: Session, email: Email, t: Triage, ext: Extraction, raw:
 
     ev = ext.event
     if t.is_event >= 0.5 and ev and ((ev.start and ev.start > now) or (ev.registration_deadline and ev.registration_deadline > now)):
-        items.append(
-            Item(
-                kind="event",
-                title=ev.name or ext.title,
-                event_start=ev.start,
-                event_end=ev.end,
-                venue=ev.venue,
-                reg_deadline=ev.registration_deadline,
-                reg_link=ev.registration_link,
-                status="asked",
-                **base,
-            )
-        )
+        items.append(Item(
+            kind="event", title=ev.name or ext.title, event_start=ev.start, event_end=ev.end, venue=ev.venue,
+            reg_deadline=ev.registration_deadline, reg_link=ev.registration_link, status="asked", **base,
+        ))
 
     if t.has_deadline >= 0.5:
         for d in ext.deadlines:
