@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -181,7 +182,8 @@ async def wa_incoming(request: Request, background: BackgroundTasks) -> dict:
                 _seen_message_ids.append(msg.get("id"))
                 text, button = _extract(msg)
                 if text or button:
-                    background.add_task(_handle, text, button)
+                    # a swipe-reply carries the id of the message being replied to
+                    background.add_task(_handle, text, button, (msg.get("context") or {}).get("id"))
     return {"ok": True}
 
 
@@ -198,10 +200,10 @@ def _extract(msg: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _handle(text: str | None, button: str | None) -> None:
+def _handle(text: str | None, button: str | None, context_id: str | None = None) -> None:
     try:
         with session_scope() as s:
-            handle_message(s, text=text, button_id=button)
+            handle_message(s, text=text, button_id=button, context_id=context_id)
     except Exception:  # noqa: BLE001
         log.exception("Failed handling WhatsApp message")
 
@@ -261,6 +263,22 @@ def whatsapp_check(token: str | None = Query(None), send: bool = False) -> dict:
         except Exception as exc:  # noqa: BLE001
             report["5_test_send"] = f"FAILED: {exc}"
     return report
+
+
+@app.post("/admin/rescan")
+def admin_rescan(background: BackgroundTasks, token: str | None = Query(None), days: int = 7) -> dict:
+    """One-time import: re-read the mailbox from `days` ago. Old mails are summarised in ONE catch-up message."""
+    _check_admin(token)
+    from app import kv
+    from app.mail.graph import CURSOR_KEY as GRAPH_CURSOR
+    from app.mail.imap import CURSOR_KEY as IMAP_CURSOR
+
+    since = (utcnow() - timedelta(days=max(1, min(days, 30)))).isoformat() + "Z"
+    with session_scope() as s:
+        kv.put(s, GRAPH_CURSOR, since)
+        kv.put(s, IMAP_CURSOR, since)
+    background.add_task(scheduler.tick, True)
+    return {"rescanning_since": since, "note": "old mails are processed quietly; one catch-up summary follows"}
 
 
 @app.post("/admin/poll-now")

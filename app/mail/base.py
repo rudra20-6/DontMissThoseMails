@@ -12,6 +12,8 @@ class RawEmail:
     body: str  # plain text
     web_link: str = ""
     links: list[str] = field(default_factory=list)
+    # When the mail was ORIGINALLY sent, if it reached us later (forwarded / attached). naive UTC.
+    original_date: datetime | None = None
 
 
 class MailError(RuntimeError):
@@ -36,6 +38,22 @@ _HEADER_LINE = re.compile(r"^\s*\**\s*(from|sent|date|to|cc|subject)\s*:?\**\s*:
 
 
 def unwrap_forward(sender: str, subject: str, body: str) -> tuple[str, str, str]:
+    sender, subject, body, _ = unwrap_forward_with_date(sender, subject, body)
+    return sender, subject, body
+
+
+def _parse_header_date(value: str) -> datetime | None:
+    from dateutil import parser as dateparser
+
+    from app.timeutil import to_utc_naive
+
+    try:
+        return to_utc_naive(dateparser.parse(value.replace(" at ", " "), fuzzy=True))
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def unwrap_forward_with_date(sender: str, subject: str, body: str) -> tuple[str, str, str, datetime | None]:
     """Undo a forward (Outlook forwarding / Power Automate / Gmail) so the ORIGINAL sender and subject are used.
 
     'FW: Assignment 3' from you@college with a quoted 'From: Moodle <noreply@moodle...>' header block
@@ -43,7 +61,7 @@ def unwrap_forward(sender: str, subject: str, body: str) -> tuple[str, str, str]
     Mails that are not forwards are returned unchanged.
     """
     if not _FWD_PREFIX.match(subject or ""):
-        return sender, subject, body
+        return sender, subject, body, None
     new_subject = _FWD_PREFIX.sub("", subject).strip() or subject
     lines = body.split("\n")
     for i, line in enumerate(lines[:60]):
@@ -51,12 +69,15 @@ def unwrap_forward(sender: str, subject: str, body: str) -> tuple[str, str, str]
         if not m or m.group(1).lower() != "from" or not m.group(2).strip():
             continue
         original_sender = m.group(2).strip()
+        original_date = None
         # skip the rest of the quoted header block (Sent/Date/To/Cc/Subject lines)
         j = i + 1
         while j < len(lines) and (_HEADER_LINE.match(lines[j]) or not lines[j].strip()) and j < i + 12:
             hm = _HEADER_LINE.match(lines[j])
             if hm and hm.group(1).lower() == "subject" and hm.group(2).strip():
                 new_subject = hm.group(2).strip()
+            if hm and hm.group(1).lower() in ("sent", "date") and hm.group(2).strip():
+                original_date = _parse_header_date(hm.group(2).strip())
             j += 1
-        return original_sender, new_subject, "\n".join(lines[j:]).strip()
-    return sender, new_subject, body
+        return original_sender, new_subject, "\n".join(lines[j:]).strip(), original_date
+    return sender, new_subject, body, None

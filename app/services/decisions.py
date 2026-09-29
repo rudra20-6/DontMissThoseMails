@@ -211,10 +211,13 @@ INTENTS: dict[str, str] = {
     "mark_registered": "registered / signed up for an event",
     "interested": "interested in / wants to attend an event",
     "not_interested": "not interested / wants to ignore or drop an item",
-    "snooze": "wants to be reminded later",
+    "snooze": "wants to be reminded later about an EXISTING item (e.g. 'remind me about 12 tonight')",
+    "reschedule": "the date/time of an EXISTING item changed: move / postpone / extend / prepone it",
+    "remind": "wants a NEW reminder at a time they choose, once or repeating (e.g. 'remind me at 5pm to call "
+              "home', 'every day at 9am remind me to mark attendance', 'every hour after 9 until I say done')",
     "details": "wants details, the link, or the full summary of an item",
     "list": "asks what is pending / upcoming / due",
-    "add": "wants to add a new personal deadline, task, reminder or event",
+    "add": "wants to add a new personal DEADLINE (something due by a date, reminded before it) or an event",
     "help": "asks how to use the bot",
     "other": "greeting, thanks, or anything else",
 }
@@ -228,6 +231,12 @@ INTENT_SCHEMA = {
         "task_title": _STR,
         "task_due": _STR,
         "task_is_event": {"type": "BOOLEAN"},
+        "snooze_until": _STR,
+        "new_time": _STR,
+        "remind_first": _STR,
+        "remind_days": _STR,
+        "remind_every_minutes": {"type": "INTEGER"},
+        "remind_until": _STR,
     },
     "required": ["intent", "item_id"],
 }
@@ -243,21 +252,39 @@ class Intent:
     task_title: str = ""
     task_due: str = ""
     task_is_event: bool = False
+    snooze_until: str = ""
+    new_time: str = ""
+    remind_first: str = ""
+    remind_days: str = ""
+    remind_every: int = 0
+    remind_until: str = ""
 
 
-def classify_message(message: str, candidates: list[tuple[int, str]], now_local: str) -> Intent:
+def classify_message(message: str, candidates: list[tuple[int, str]], now_local: str,
+                     replying_to: str = "") -> Intent:
     """candidates: (item_id, description) of the user's active items. Raises LLMUnavailable."""
     items = "\n".join(f"  {iid}: {desc[:150]}" for iid, desc in candidates[:25]) or "  (none)"
+    tz = get_settings().timezone
     system = (
         "You interpret WhatsApp messages sent to a student's deadline/event reminder bot. Output JSON only.\n"
         "intent is one of:\n" + "\n".join(f"  {k}: {v}" for k, v in INTENTS.items()) + "\n"
         "item_id: the id of the active item the message refers to, or 0 if none/unclear.\n"
-        "snooze_hours: for snooze, how many hours (default 3).\n"
-        f"For intent=add: task_title (<=8 words), task_due as ISO 8601 with the {get_settings().timezone} offset "
-        "(tasks without a time -> 23:59, events -> 09:00; empty if no date), task_is_event."
+        "If the user is replying to a message about an item and names no other item, use that item.\n"
+        "snooze: snooze_hours (default 3), or snooze_until (ISO 8601) when they name a time like 'till 8pm'.\n"
+        f"All times are ISO 8601 with the {tz} offset, resolved from the current time.\n"
+        "add: task_title (<=8 words), task_due (tasks without a time -> 23:59, events -> 09:00; empty if no date), "
+        "task_is_event.\n"
+        "reschedule: item_id and new_time (the new due date / start time).\n"
+        "remind: task_title (<=8 words, what to do, e.g. 'Put attendance on ISB'); remind_first = the FIRST reminder "
+        "time (the next future occurrence; 'in 20 min' -> now + 20 min); remind_days = '' for a one-off, else "
+        "'daily', 'weekdays', 'weekends' or days like 'mon,wed,fri'; remind_every_minutes = repeat interval within "
+        "a day when they want repeats / nagging until done (e.g. 'every hour' -> 60), else 0; remind_until = "
+        "'HH:MM' 24h if they give an end time for the day's repeats, else ''."
     )
+    context = f"The user is replying to your message about item {replying_to}\n" if replying_to else ""
     r = get_pool().generate_json(
-        system, f"Current time: {now_local}\nActive items:\n{items}\n\nMessage: {message}", INTENT_SCHEMA, max_tokens=512
+        system, f"Current time: {now_local}\nActive items:\n{items}\n\n{context}Message: {message}", INTENT_SCHEMA,
+        max_tokens=512,
     )
     valid_ids = {iid for iid, _ in candidates}
     try:
@@ -277,4 +304,17 @@ def classify_message(message: str, candidates: list[tuple[int, str]], now_local:
         task_title=(r.get("task_title") or "")[:200],
         task_due=r.get("task_due") or "",
         task_is_event=bool(r.get("task_is_event")),
+        snooze_until=r.get("snooze_until") or "",
+        new_time=r.get("new_time") or "",
+        remind_first=r.get("remind_first") or "",
+        remind_days=r.get("remind_days") or "",
+        remind_every=_int(r.get("remind_every_minutes")),
+        remind_until=r.get("remind_until") or "",
     )
+
+
+def _int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0

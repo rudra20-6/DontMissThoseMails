@@ -59,11 +59,12 @@ class WhatsAppClient:
 
     def send_buttons(self, text: str, buttons: list[tuple[str, str]]) -> dict:
         """buttons: list of (id, title). Max 3 buttons, title max 20 chars, body max 1024 chars."""
+        first: dict = {}
         if len(text) > 1024:
             # Interactive bodies are limited; send the long part as text first.
-            self.send_text(text)
+            first = self.send_text(text)
             text = "Choose an option:"
-        return self._send(
+        resp = self._send(
             {
                 "type": "interactive",
                 "interactive": {
@@ -78,6 +79,7 @@ class WhatsAppClient:
                 },
             }
         )
+        return {**resp, "messages": (first.get("messages") or []) + (resp.get("messages") or [])}
 
     def send_template(self, param: str | None = None) -> dict:
         template: dict[str, Any] = {

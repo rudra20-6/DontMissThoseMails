@@ -4,6 +4,14 @@
 
 Built by an IIIT student, for IIIT students (`iiit.ac.in` Outlook accounts). Free to run, and nothing runs on your laptop.
 
+<p align="center">
+  <a href="brag-output/brag.mp4">
+    <img src="brag-output/brag-poster.jpg" alt="DontMissThoseMails trailer" width="720">
+  </a>
+  <br>
+  <sub>▶️ <a href="brag-output/brag.mp4">Watch the 25-second trailer</a> (sound on)</sub>
+</p>
+
 > ### 👉 Set it up: **[HOW_TO_RUN.md](HOW_TO_RUN.md)**
 > Step-by-step, about 60–90 minutes, ₹0. It's the exact setup that works with IIIT accounts, including the workarounds
 > for IIIT's "Need admin approval" block and WhatsApp's webhook quirks.
@@ -18,6 +26,9 @@ Built by an IIIT student, for IIIT students (`iiit.ac.in` Outlook accounts). Fre
   registration closes and every evening) until you say **registered**, then reminds you before it starts.
 - 🏛️ **Notices** (exams, timetable, hostel, opportunities) → 2–4 sentences with the key link.
 - 📰 **Newsletters and promos** → dropped. Low-priority mail → one line in the 08:00 **daily digest**.
+- 🔁 **Your own reminders, set in chat:** *"remind me to put attendance on ISB every hour after 9am until I say done,
+  every day"*. It pings you every hour until you tap **✅ Done for today**, then starts again tomorrow.
+- ↩️ **Swipe-reply** `done` / `snooze 2h` / `no` to any bot message. No #id needed, and `undo` if you slip.
 - 💬 **Talk to it normally:** *"I submitted the OS assignment"*, `snooze 12 2d`, `add DBMS project due Friday 5pm`, `list`.
 - 📥 **One-time catch-up:** forward last week's mail once and get a single summary of what still matters.
 
@@ -76,7 +87,8 @@ app/
   services/
     decisions.py       all AI: one Gemini call per email / per free-text message
     pipeline.py        email → queue → analysis → items → first notification (or quiet catch-up)
-    reminders.py       deterministic reminder planner
+    reminders.py       deterministic reminder planner (deadlines, events, routines)
+    routines.py        schedules for reminders you set up in chat
     digest.py          daily digest + catch-up summary
     commands.py        WhatsApp commands and free text
     notifier.py        quiet hours, pause, 24h window, outbox

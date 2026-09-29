@@ -41,7 +41,7 @@ class Item(Base):
     __tablename__ = "items"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email_id: Mapped[int | None] = mapped_column(ForeignKey("emails.id"), nullable=True)
-    kind: Mapped[str] = mapped_column(String(32))  # deadline | event | announcement
+    kind: Mapped[str] = mapped_column(String(32))  # deadline | event | announcement | routine
     category: Mapped[str] = mapped_column(String(64), default="")
     title: Mapped[str] = mapped_column(String(512))
     summary: Mapped[str] = mapped_column(Text, default="")
@@ -54,14 +54,19 @@ class Item(Base):
     venue: Mapped[str] = mapped_column(String(512), default="")
     reg_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reg_link: Mapped[str] = mapped_column(Text, default="")
+    # routine: {"start": "09:00", "every": 60 (minutes, 0 = once), "end": "17:00" or "",
+    #           "days": [0..6] (Mon=0) for repeating, or "date": "2026-10-01" for a one-off}
+    schedule: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # deadline: pending | done | dismissed | expired
     # event: asked | interested | registered | not_interested | expired
     # announcement: info
+    # routine: active | done (one-off finished) | stopped | expired
     status: Mapped[str] = mapped_column(String(32), index=True)
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_nag_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     in_digest: Mapped[bool] = mapped_column(Boolean, default=False)  # low-priority, deliver via digest
+    catchup: Mapped[bool] = mapped_column(Boolean, default=False)  # from an old mail: report in the catch-up summary
     digested: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -87,3 +92,12 @@ class Outbox(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SentMessage(Base):
+    """WhatsApp message id -> item, so a swipe-reply ("done") knows which item it is about."""
+
+    __tablename__ = "sent_messages"
+    wamid: Mapped[str] = mapped_column(String(255), primary_key=True)
+    item_id: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

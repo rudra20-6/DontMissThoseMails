@@ -7,12 +7,12 @@ def test_outlook_forward_is_unwrapped():
 ________________________________
 From: Moodle <noreply@moodle.iiit.ac.in>
 Sent: Monday, September 28, 2026 10:02 AM
-To: Rudra Choudhary <rudra.choudhary@research.iiit.ac.in>
+To: A Student <student@research.iiit.ac.in>
 Subject: CS3.301 Assignment 3 released
 
 Dear student,
 Assignment 3 is due Friday 11:59 PM."""
-    sender, subject, text = unwrap_forward("Rudra <rudra.choudhary@research.iiit.ac.in>", "FW: CS3.301 Assignment 3 released", body)
+    sender, subject, text = unwrap_forward("A Student <student@research.iiit.ac.in>", "FW: CS3.301 Assignment 3 released", body)
     assert sender == "Moodle <noreply@moodle.iiit.ac.in>"
     assert subject == "CS3.301 Assignment 3 released"
     assert text.startswith("Dear student") and "Sent:" not in text

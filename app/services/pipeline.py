@@ -26,6 +26,7 @@ from app.timeutil import local, utcnow
 
 log = logging.getLogger(__name__)
 MAX_PER_TICK = 20
+CATCHUP_AFTER_HOURS = 24  # mails originally sent longer ago than this are summarised, not pushed one by one
 
 
 def poll_mail() -> int:
@@ -39,12 +40,20 @@ def poll_mail() -> int:
 
 
 def ingest(raw: RawEmail) -> bool:
+    sent_at = raw.original_date or raw.received_at
     with session_scope() as session:
         if session.scalar(select(Email.id).where(Email.message_id == raw.message_id)):
             return False
+        # The same mail can arrive twice with different Message-IDs (forwarded singly AND in a bulk forward).
+        twin = session.scalar(select(Email.id).where(
+            Email.subject == raw.subject[:1000], Email.sender == raw.sender[:500],
+            Email.received_at >= sent_at - timedelta(minutes=3), Email.received_at <= sent_at + timedelta(minutes=3),
+        ))
+        if twin:
+            return False
         session.add(Email(
             message_id=raw.message_id, sender=raw.sender[:500], subject=raw.subject[:1000],
-            received_at=raw.received_at, web_link=raw.web_link, body=truncate(raw.body, 20000),
+            received_at=sent_at, web_link=raw.web_link, body=truncate(raw.body, 20000),
             links=raw.links[:20], action="pending",
         ))
         return True
@@ -98,10 +107,19 @@ def process_one(email_id: int) -> None:
             return
         raw = RawEmail(email.message_id, email.sender, email.subject, email.received_at, body, email.web_link, links)
         items = build_items(session, email, triage, ext, raw)
+        old = utcnow() - email.received_at > timedelta(hours=CATCHUP_AFTER_HOURS)
         for item in items:
             item.in_digest = action == "digest"
+            if old:
+                # Old mail (e.g. a one-time import of last week's inbox): no individual message, it goes
+                # into one catch-up summary instead. Old low-value announcements are simply archived.
+                # (an "announcement" from an old deadline/event mail means the date already passed: skip it)
+                item.catchup = item.kind != "announcement" or (
+                    item.importance >= 3 and triage.has_deadline < 0.5 and triage.is_event < 0.5)
+                item.in_digest = False
+                item.digested = True
         session.flush()
-        if action == "notify":
+        if action == "notify" and not old:
             for item in items:
                 send_new_item(session, item, _short_sender(email.sender))
 
@@ -153,12 +171,12 @@ def send_new_item(session: Session, item: Item, sender: str = "") -> None:
     text = messages.item_card(item, sender)
     urgent = item.kind == "deadline" and item.due_at and (item.due_at - utcnow()).total_seconds() < 6 * 3600
     if item.kind == "event":
-        text += "\n\n*Are you interested in this?*"
-        notifier.notify(session, text, messages.event_interest_buttons(item))
+        text += "\n\n🙋 *Are you interested in this?*"
+        notifier.notify(session, text, messages.event_interest_buttons(item), item_id=item.id)
     elif item.kind == "deadline":
-        notifier.notify(session, text, messages.deadline_buttons(item), urgent=bool(urgent))
+        notifier.notify(session, text, messages.deadline_buttons(item), urgent=bool(urgent), item_id=item.id)
     else:
-        notifier.notify(session, text)
+        notifier.notify(session, text, item_id=item.id)
 
 
 def _short_sender(sender: str) -> str:

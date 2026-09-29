@@ -12,7 +12,7 @@ from app import kv
 from app.config import get_settings
 from app.db import session_scope
 from app.services import notifier
-from app.services.digest import maybe_send_daily_digest
+from app.services.digest import maybe_send_catchup, maybe_send_daily_digest
 from app.services.pipeline import poll_mail, process_pending
 from app.services.reminders import run_reminders
 from app.timeutil import utcnow
@@ -42,6 +42,7 @@ def tick(force_poll: bool = False) -> dict:
         with session_scope() as session:
             result["reminders"] = run_reminders(session)
         with session_scope() as session:
+            result["catchup"] = maybe_send_catchup(session)
             result["digest"] = maybe_send_daily_digest(session)
         with session_scope() as session:
             result["outbox"] = notifier.flush_outbox(session)

@@ -38,12 +38,36 @@ Assignment 3 is released on Moodle. Submit a single zip named <rollno>_A3.zip. 2
 4. **Registered** → reminders **24h and 2h** before the event starts.
 5. Registration closed while you were still "interested" → one message saying so.
 
+### 🔁 Your own reminders and routines
+Just tell it, in your own words:
+- *"remind me to put attendance on ISB every hour after 9am until I say I've marked it, every day"*
+- *"every weekday at 8:30 remind me to take my ID card"*
+- *"remind me at 5pm to call home"* · *"remind me in 20 min to check the oven"*
+
+```
+🔁 Routine  ·  #14
+Put attendance on ISB
+
+🗓️ Every day · from 9:00 AM, every 1 h until 10:59 PM
+⏹️ Stops for the day when you tap ✅ Done
+⏭️ Next: Tomorrow, 9:00 AM
+```
+- Every ping has `[✅ Done for today] [⏳ 15 min] [🛑 Stop]`. **Done** stops it for today, and it starts again the next
+  day. **Stop** deletes it.
+- Repeats stop for the night when quiet hours start (or at the end time you gave, e.g. *"until 5pm"*).
+- These go out at the times you chose, even during quiet hours. `pause` silences them (skipped, not saved up).
+- If the bot was asleep for a few slots you get **one** ping, not a burst. An hourly ping that couldn't be delivered
+  (WhatsApp's 24h window) is dropped once it's out of date, not delivered hours later.
+- A one-off time that has already passed today (*"at 9am"* said at 10am) is set for tomorrow.
+- It costs one AI call to set up. After that the reminders use no AI at all.
+
 ### 🏛️ Notices and everything else
 - Official notices, exam/timetable changes, opportunities, campus notices: summarised in 2–4 sentences with the key link.
 - Low-priority mail doesn't ping you. It goes into the **daily digest**.
 - Newsletters, promos and automated junk are **dropped**.
 
-Every message has a category emoji (📚 coursework · 🏛️ academic notice · 🎉 event · 💼 opportunity · 🏠 campus ·
+Messages are laid out to skim: the title and due time are **bold**, the mail summary is a quoted block, times read
+as *Today, 5:00 PM* / *Tomorrow, 9:00 AM*, and commands you can send are shown as `code`. Every message has a category emoji (📚 coursework · 🏛️ academic notice · 🎉 event · 💼 opportunity · 🏠 campus ·
 ✉️ personal · 📩 other), a priority dot (🔴 critical · 🟠 high · 🟡 medium · ⚪ low), and a short **#id** you can refer to.
 
 ### ☀️ Daily digest (08:00)
@@ -66,16 +90,25 @@ everything upcoming.
 | You send | It does |
 |---|---|
 | `help` | command list |
-| `list` | all pending deadlines and events |
-| `done 12` / `submitted 12` | stop reminders for deadline #12 |
+| `list` | all pending deadlines, events and routines |
+| `done 12` / `submitted 12` | stop reminders for deadline #12 (for a routine: done for today) |
+| `done 12 14 15` | several at once |
 | `registered 12` | event #12 registered → pre-event reminders |
 | `interested 12` / `no 12` | answer an event invite / drop any item |
-| `snooze 12 3h` / `snooze 12 2d` | pause reminders for an item |
+| `snooze 12 3h` / `snooze 12 2d` / `snooze 12 till 8pm` | pause reminders for an item |
+| `move 12 to Friday 5pm` / *"the OS deadline got extended to Monday"* | change the date; reminders are re-planned |
+| *"remind me …"* | a new one-off reminder or repeating routine (see above) |
+| `stop 14` | delete a routine |
+| `undo` | take back your last done / drop / stop / snooze / move |
 | `details 12` | the full card again, with links |
 | `add DBMS project due Friday 5pm` | add your own deadline or event (AI reads the date) |
 | `digest` | today's digest now |
 | `pause` / `resume` | mute everything except urgent reminders |
 | anything else, e.g. *"I submitted the OS assignment"* | the AI works out what you mean and which item |
+
+**No number needed:** swipe-reply to any of the bot's messages with `done`, `snooze 2h`, `no`, `details`, `stop`…
+and it applies to that item. Without a swipe-reply, a bare `done` applies to the last thing it messaged you about (it
+says which, and `undo` fixes a wrong guess).
 
 Buttons and exact commands are instant and use no AI. Only messages from your own number (`WHATSAPP_RECIPIENT`) are
 accepted; everyone else is ignored.

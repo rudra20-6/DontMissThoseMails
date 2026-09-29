@@ -1,4 +1,6 @@
-# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo.
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick your fork of this repo.
+# Defaults match the setup that works for IIIT (iiit.ac.in) accounts:
+# college Outlook -> forwarded to a Gmail "mailbot" -> read over IMAP. See HOW_TO_RUN.md.
 services:
   - type: web
     name: dontmissthosemails
@@ -12,8 +14,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.10
+      # Generate it yourself (URL-safe): py -c "import secrets; print(secrets.token_urlsafe(24))"
       - key: ADMIN_TOKEN
-        generateValue: true
+        sync: false
       - key: APP_BASE_URL
         sync: false
       - key: DATABASE_URL
@@ -21,13 +24,17 @@ services:
       - key: TIMEZONE
         value: Asia/Kolkata
       - key: MAIL_PROVIDER
-        value: graph
-      - key: MS_CLIENT_ID
+        value: imap
+      - key: IMAP_HOST
+        value: imap.gmail.com
+      - key: IMAP_PORT
+        value: "993"
+      - key: IMAP_USERNAME
         sync: false
-      - key: MS_CLIENT_SECRET
+      - key: IMAP_PASSWORD
         sync: false
-      - key: MS_TENANT
-        value: common
+      - key: GEMINI_API_KEYS
+        sync: false
       - key: WHATSAPP_TOKEN
         sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
@@ -37,6 +44,4 @@ services:
       - key: WHATSAPP_VERIFY_TOKEN
         generateValue: true
       - key: WHATSAPP_APP_SECRET
-        sync: false
-      - key: GEMINI_API_KEYS
         sync: false

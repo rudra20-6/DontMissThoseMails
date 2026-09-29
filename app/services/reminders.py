@@ -16,12 +16,12 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import Item, ReminderLog
-from app.services import messages, notifier
-from app.timeutil import local, utcnow
+from app.services import messages, notifier, routines
+from app.timeutil import local, to_utc_naive, utcnow
 
 log = logging.getLogger(__name__)
 
-ACTIVE_STATUSES = ("pending", "asked", "interested", "registered")
+ACTIVE_STATUSES = ("pending", "asked", "interested", "registered", "active")
 
 
 @dataclass
@@ -58,9 +58,46 @@ def _nag_key(item: Item, now: datetime) -> str | None:
     return f"nag{now_l.date().isoformat()}"
 
 
+def plan_routine(item: Item, now: datetime, sent: set[str]) -> list[Action]:
+    """Reminders the user set up in chat. At most one message per tick; missed slots collapse into one."""
+    sch = item.schedule or {}
+    if item.status != "active" or not sch.get("start"):
+        return []
+    now_l = local(now)
+    today = now_l.date()
+    one_off = routines.is_one_off(sch)
+    single = int(sch.get("every") or 0) <= 0
+    if one_off and today.isoformat() > sch.get("date", "") and not item.snoozed_until:
+        return [Action([], new_status="expired")]
+    running = routines.runs_on(sch, today) and routines.done_key(today) not in sent
+    created_l = local(item.created_at or now)
+    due = [t for t in routines.day_slots(sch, today) if created_l < t <= now_l] if running else []
+    nxt = routines.next_slot(sch, now, item.created_at, sent)
+    extra = {"scheduled": True, "expires_at": to_utc_naive(nxt) if nxt else now + timedelta(hours=3)}
+    buttons = messages.routine_buttons(item)
+
+    if item.snoozed_until:
+        if now < item.snoozed_until:
+            return []
+        key = f"snz{item.snoozed_until.isoformat()}"
+        keys = [key] + ([routines.slot_key(due[-1])] if due else [])  # the snooze replaces the current slot
+        if key in sent or not (running or one_off):
+            return [Action([], clear_snooze=True)]
+        return [Action([k for k in keys if k not in sent], messages.routine_reminder(item, None, nxt), buttons,
+                       clear_snooze=True, new_status="done" if one_off and single and nxt is None else None,
+                       extra=extra)]
+
+    if not due or routines.slot_key(due[-1]) in sent:
+        return []
+    return [Action([routines.slot_key(due[-1])], messages.routine_reminder(item, len(due), nxt), buttons,
+                   new_status="done" if one_off and single and nxt is None else None, extra=extra)]
+
+
 def plan(item: Item, now: datetime, sent: set[str]) -> list[Action]:
     s = get_settings()
     out: list[Action] = []
+    if item.kind == "routine":
+        return plan_routine(item, now, sent)
 
     def fresh(keys: list[str]) -> list[str]:
         return [k for k in keys if k not in sent]
@@ -134,8 +171,10 @@ def run_reminders(session: Session) -> int:
     for item in items:
         sent = set(session.scalars(select(ReminderLog.key).where(ReminderLog.item_id == item.id)).all())
         for action in plan(item, now, sent):
-            if action.text:
-                notifier.notify(session, action.text, action.buttons, urgent=action.urgent)
+            scheduled = bool(action.extra.get("scheduled"))
+            if action.text and not (scheduled and notifier.is_paused(session)):  # paused: skip, don't pile up
+                notifier.notify(session, action.text, action.buttons, urgent=action.urgent, item_id=item.id,
+                                scheduled=scheduled, expires_at=action.extra.get("expires_at"))
                 sent_count += 1
             for key in action.keys:
                 session.add(ReminderLog(item_id=item.id, key=key))

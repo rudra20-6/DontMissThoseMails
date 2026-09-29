@@ -4,7 +4,7 @@ import tempfile
 _tmp = tempfile.mkdtemp()
 os.environ.update(
     {
-        "DATABASE_URL": f"sqlite:///{_tmp}/test.db",
+        "DATABASE_URL": os.environ.get("TEST_DATABASE_URL", f"sqlite:///{_tmp}/test.db"),
         "WHATSAPP_DRY_RUN": "true",
         "WHATSAPP_RECIPIENT": "919999999999",
         "ADMIN_TOKEN": "test-admin",
@@ -40,5 +40,9 @@ def sent(monkeypatch):
     out: list[dict] = []
     from app.services import notifier
 
-    monkeypatch.setattr(notifier, "_deliver", lambda payload: out.append(payload))
+    def deliver(payload):
+        out.append(payload)
+        return [f"wamid.test{len(out)}"]
+
+    monkeypatch.setattr(notifier, "_deliver", deliver)
     return out
