@@ -42,6 +42,8 @@ class Item(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email_id: Mapped[int | None] = mapped_column(ForeignKey("emails.id"), nullable=True)
     kind: Mapped[str] = mapped_column(String(32))  # deadline | event | announcement | routine
+    # short handle the user types: D1 (deadline), E2 (event), R1 (routine). Notices have none.
+    label: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     category: Mapped[str] = mapped_column(String(64), default="")
     title: Mapped[str] = mapped_column(String(512))
     summary: Mapped[str] = mapped_column(Text, default="")

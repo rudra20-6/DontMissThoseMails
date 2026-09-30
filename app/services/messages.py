@@ -31,7 +31,26 @@ IMPORTANCE_EMOJI = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low":
 
 
 def tag(item: Item) -> str:
-    return f"`#{item.id}`"
+    """The handle the user can type, e.g. `D3`. Notices have none."""
+    return f"`{item.label}`" if item.label else ""
+
+
+def _dot(item: Item) -> str:
+    return f"  ·  {tag(item)}" if item.label else ""
+
+
+def pre(item: Item) -> str:
+    """`D3` + space, or nothing for a notice."""
+    return f"{tag(item)} " if item.label else ""
+
+
+def _lead(item: Item) -> str:
+    return f"• {tag(item)} " if item.label else "• "
+
+
+def ref(item: Item) -> str:
+    """What to type after a command: the handle, else a word of the title."""
+    return item.label or (item.title.split()[0].lower() if item.title else "")
 
 
 def quote(text: str) -> str:
@@ -43,7 +62,7 @@ def header(item: Item) -> str:
     label = importance_label(item.importance)
     return (
         f"{CATEGORY_EMOJI.get(item.category, '📩')} *{CATEGORY_NAME.get(item.category, 'Mail')}*  ·  "
-        f"{IMPORTANCE_EMOJI[label]} {label.title()}  ·  {tag(item)}"
+        f"{IMPORTANCE_EMOJI[label]} {label.title()}{_dot(item)}"
     )
 
 
@@ -96,23 +115,23 @@ def deadline_reminder(item: Item) -> str:
     assert item.due_at
     left = item.due_at - utcnow()
     if left.total_seconds() <= 6 * 3600:
-        top = f"🚨 *Due {humanize_delta(item.due_at)}!*  ·  {tag(item)}"
+        top = f"🚨 *Due {humanize_delta(item.due_at)}!*{_dot(item)}"
     else:
-        top = f"⏰ *Reminder:* due {humanize_delta(item.due_at)}  ·  {tag(item)}"
+        top = f"⏰ *Reminder:* due {humanize_delta(item.due_at)}{_dot(item)}"
     lines = [top, f"*{item.title}*", f"📅 {fmt(item.due_at)}"]
     if item.link:
         lines.append(f"🔗 {item.link}")
-    lines += ["", f"_Submitted? Tap ✅ Done or reply_ `done {item.id}`"]
+    lines += ["", f"_Submitted? Tap ✅ Done or reply_ `done {ref(item)}`"]
     return "\n".join(lines)
 
 
 def deadline_passed(item: Item) -> str:
-    return (f"⌛ *Deadline passed*  ·  {tag(item)}\n*{item.title}* was due {fmt(item.due_at)}.\n\n"
-            f"_Hope you made it! Reply_ `done {item.id}` _to confirm._")
+    return (f"⌛ *Deadline passed*{_dot(item)}\n*{item.title}* was due {fmt(item.due_at)}.\n\n"
+            f"_Hope you made it! Reply_ `done {ref(item)}` _to confirm._")
 
 
 def registration_reminder(item: Item) -> str:
-    lines = [f"📝 *Have you registered yet?*  ·  {tag(item)}", f"*{item.title}*"]
+    lines = [f"📝 *Have you registered yet?*{_dot(item)}", f"*{item.title}*"]
     if item.reg_deadline:
         lines.append(f"⏳ Registration closes *{humanize_delta(item.reg_deadline)}* ({fmt(item.reg_deadline)})")
     if item.event_start:
@@ -124,13 +143,13 @@ def registration_reminder(item: Item) -> str:
 
 def registration_closed(item: Item) -> str:
     return (
-        f"⌛ *Registration closed*  ·  {tag(item)}\n*{item.title}*\n\n"
-        f"_If you did register, reply_ `registered {item.id}` _and I'll remind you before it starts._"
+        f"⌛ *Registration closed*{_dot(item)}\n*{item.title}*\n\n"
+        f"_If you did register, reply_ `registered {ref(item)}` _and I'll remind you before it starts._"
     )
 
 
 def event_reminder(item: Item) -> str:
-    lines = [f"🎉 *Starting {humanize_delta(item.event_start)}!*  ·  {tag(item)}", f"*{item.title}*",
+    lines = [f"🎉 *Starting {humanize_delta(item.event_start)}!*{_dot(item)}", f"*{item.title}*",
              f"📅 {fmt(item.event_start)}"]
     if item.venue:
         lines.append(f"📍 {item.venue}")
@@ -138,14 +157,14 @@ def event_reminder(item: Item) -> str:
 
 
 def reask_interest(item: Item) -> str:
-    return f"🤔 *Still deciding?*  ·  {tag(item)}\nAre you interested in *{item.title}*?"
+    return f"🤔 *Still deciding?*{_dot(item)}\nAre you interested in *{item.title}*?"
 
 
 def routine_card(item: Item, nxt=None) -> str:
     sch = item.schedule or {}
     one_off = not sch.get("days")
     every = int(sch.get("every") or 0)
-    lines = [f"{'⏰' if one_off else '🔁'} *{'Reminder' if one_off else 'Routine'}*  ·  {tag(item)}", f"*{item.title}*", ""]
+    lines = [f"{'⏰' if one_off else '🔁'} *{'Reminder' if one_off else 'Routine'}*{_dot(item)}", f"*{item.title}*", ""]
     if one_off:
         if nxt:
             lines.append(f"⏭️ *{fmt(to_utc_naive(nxt))}*  _({humanize_delta(to_utc_naive(nxt))})_")
@@ -163,12 +182,12 @@ def routine_card(item: Item, nxt=None) -> str:
 def routine_created(item: Item, nxt) -> str:
     stop = "delete it" if not (item.schedule or {}).get("days") else "delete the routine"
     done = "done" if not (item.schedule or {}).get("days") else "done for today"
-    return routine_card(item, nxt) + f"\n\n`done {item.id}` {done}  ·  `stop {item.id}` {stop}"
+    return routine_card(item, nxt) + f"\n\n`done {ref(item)}` {done}  ·  `stop {ref(item)}` {stop}"
 
 
 def routine_reminder(item: Item, count: int | None, nxt) -> str:
     sch = item.schedule or {}
-    lines = [f"{'⏰' if not sch.get('days') else '🔁'} *{item.title}*  ·  {tag(item)}"]
+    lines = [f"{'⏰' if not sch.get('days') else '🔁'} *{item.title}*{_dot(item)}"]
     every = int(sch.get("every") or 0)
     if every:
         today = local(utcnow()).date()
@@ -186,7 +205,7 @@ EVENT_STATE = {"asked": "❔ _interested?_", "interested": "📝 _register!_", "
 
 def item_line(item: Item, sent: set[str] | None = None) -> str:
     if item.kind == "deadline" and item.due_at:
-        return f"• {tag(item)} *{item.title}*\n      ⏰ {fmt(item.due_at)}  ·  _{humanize_delta(item.due_at)}_"
+        return f"{_lead(item)}*{item.title}*\n      ⏰ {fmt(item.due_at)}  ·  _{humanize_delta(item.due_at)}_"
     if item.kind == "event":
         state = EVENT_STATE.get(item.status, item.status)
         detail = []
@@ -194,15 +213,15 @@ def item_line(item: Item, sent: set[str] | None = None) -> str:
             detail.append(f"📅 {fmt(item.event_start)}")
         if item.status == "interested" and item.reg_deadline:
             detail.append(f"reg by {fmt(item.reg_deadline)}")
-        return f"• {tag(item)} *{item.title}*  {state}" + (f"\n      {'  ·  '.join(detail)}" if detail else "")
+        return f"{_lead(item)}*{item.title}*  {state}" + (f"\n      {'  ·  '.join(detail)}" if detail else "")
     if item.kind == "routine" and item.schedule:
         now = utcnow()
         done_today = sent is not None and routines.done_key(local(now).date()) in sent
         nxt = routines.next_slot(item.schedule, now, item.created_at, sent or set())
         state = "✅ _done today_" if done_today else (f"⏭️ {fmt(to_utc_naive(nxt))}" if nxt else "")
-        return (f"• {tag(item)} *{item.title}*\n      🔁 {routines.describe(item.schedule)}"
+        return (f"{_lead(item)}*{item.title}*\n      🔁 {routines.describe(item.schedule)}"
                 + (f"  ·  {state}" if state else ""))
-    return f"• {tag(item)} {item.title}"
+    return f"{_lead(item)}{item.title}"
 
 
 HELP = """🤖 *DontMissThoseMails*
@@ -211,23 +230,27 @@ HELP = """🤖 *DontMissThoseMails*
 `list` · everything pending
 `digest` · today's summary
 
+*🗣️ Say which one by name*
+`done dbms` · `snooze hackathon 2h` · `details os quiz`
+_Or by its tag:_ `D2` _deadline,_ `E1` _event,_ `R1` _reminder_ (`done D2`)
+
 *⏰ Deadlines & events*
-`done 12` · submitted _(also_ `done 12 14 15`_)_
-`registered 12` · you registered for event 12
-`interested 12` / `no 12` · answer an event invite
-`snooze 12 3h` · or `snooze 12 till 8pm`
-`move 12 to Fri 5pm` · the date changed
-`details 12` · full summary + links
+`done dbms` · submitted _(several:_ `done D1 D3`_)_
+`registered hackathon` · you registered
+`interested hackathon` / `no hackathon`
+`snooze os 3h` · or `snooze os till 8pm`
+`move os to Fri 5pm` · the date changed
+`details os` · full summary + links
 `add DBMS project due Fri 5pm` · your own deadline
 
 *🔁 Reminders*
 _remind me to put attendance on ISB every hour after 9am until I say done, every day_
 _remind me at 5pm to call home_
-`done 14` · done for today
-`stop 14` · delete it
+`done attendance` · done for today
+`stop attendance` · delete it
 
 *✨ Handy*
-↩️ *Swipe-reply* to any of my messages with `done`, `snooze 2h`, `no`… no number needed
+↩️ *Swipe-reply* to any of my messages with `done`, `snooze 2h`, `no`… nothing else needed
 `undo` · take back your last change
 `pause` / `resume` · mute non-urgent messages
 

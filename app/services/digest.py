@@ -54,14 +54,14 @@ def build_digest(session: Session) -> str:
             messages.item_line(r, set(session.scalars(select(ReminderLog.key).where(ReminderLog.item_id == r.id))))
             for r in todays_routines))
     if held:
-        lines = [f"• {messages.tag(i)} {messages.CATEGORY_EMOJI.get(i.category, '📩')} *{i.title}*\n      _{i.summary[:160]}_"
+        lines = [f"• {messages.CATEGORY_EMOJI.get(i.category, '📩')} *{i.title}*\n      _{i.summary[:160]}_"
                  for i in held[:15]]
         parts.append("\n📬 *Other mail (low priority)*\n" + "\n".join(lines))
         for i in held:
             i.digested = True
     if len(parts) == 1:
         parts.append("\n🎈 Nothing pending. Enjoy your day!")
-    parts.append("\n_Reply_ `details <id>` _for more,_ `help` _for commands._")
+    parts.append("\n_Reply_ `details <name>` _for more,_ `help` _for commands._")
     return "\n".join(parts)
 
 
@@ -100,15 +100,15 @@ def maybe_send_catchup(session: Session) -> bool:
             reg = f" · register by {fmt(e.reg_deadline)}" if e.reg_deadline else ""
             lines.append(f"• {messages.tag(e)} *{e.title}*" + (f"\n      📅 {fmt(e.event_start)}" if e.event_start else "") + reg)
         parts.append("\n🎉 *Events you can still join*\n" + "\n".join(lines)
-                     + "\n_Reply_ `interested <id>` _or_ `no <id>` _for each, e.g._ `interested "
-                     + str(events[0].id) + "`")
+                     + "\n_Reply_ `interested <name>` _or_ `no <name>` _for each, e.g._ `interested "
+                     + messages.ref(events[0]) + "`")
     if notices:
         parts.append("\n📢 *Important notices*\n" + "\n".join(
-            f"• {messages.tag(n)} {messages.CATEGORY_EMOJI.get(n.category, '📩')} *{n.title}*\n      _{n.summary[:140]}_"
+            f"• {messages.CATEGORY_EMOJI.get(n.category, '📩')} *{n.title}*\n      _{n.summary[:140]}_"
             for n in notices[:12]))
     if len(parts) == 2:
         parts.append("\nNothing from those mails needs your attention anymore. 🎈")
-    parts.append("\n_Reply_ `details <id>` _for more about any item._")
+    parts.append("\n_Reply_ `details <name>` _for more about any item._")
     notifier.notify(session, "\n".join(parts))
     for i in items:
         i.catchup = False

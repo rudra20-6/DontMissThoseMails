@@ -12,7 +12,7 @@ Setup: [HOW_TO_RUN.md](HOW_TO_RUN.md).
 
 ### 📚 Deadlines (assignments, quizzes, submissions, fees, forms)
 ```
-📚 Coursework 🟠 high  ·  #12
+📚 Coursework  ·  🟠 High  ·  D2
 OS Assignment 3: Scheduling Simulator
 from Moodle
 
@@ -26,7 +26,7 @@ Assignment 3 is released on Moodle. Submit a single zip named <rollno>_A3.zip. 2
 - Each reminder is sent **once**. If the bot was asleep during a slot, you get one catch-up reminder, not a burst.
 - If you learn about a deadline late (say 5h before), earlier slots are skipped.
 - When the deadline passes, you get one "⌛ deadline passed" message, then it stops.
-- Tap **✅ Done** or send `done 12` and the reminders stop.
+- Tap **✅ Done** or send `done os` (or `done D2`) and the reminders stop.
 
 ### 🎉 Events (club events, talks, workshops, hackathons, fests)
 1. A new event arrives → summary with **when, where, register-by and the link**, plus
@@ -34,7 +34,7 @@ Assignment 3 is released on Moodle. Submit a single zip named <rollno>_A3.zip. 2
 2. No answer in 24h → it asks **once** more.
 3. **Interested** → it keeps reminding you to register:
    - **48h, 24h, 6h, 1h** before registration closes;
-   - and every evening at **18:00**, until you tap **✅ Registered** (or `registered 12`).
+   - and every evening at **18:00**, until you tap **✅ Registered** (or `registered hackathon`).
 4. **Registered** → reminders **24h and 2h** before the event starts.
 5. Registration closed while you were still "interested" → one message saying so.
 
@@ -45,7 +45,7 @@ Just tell it, in your own words:
 - *"remind me at 5pm to call home"* · *"remind me in 20 min to check the oven"*
 
 ```
-🔁 Routine  ·  #14
+🔁 Routine  ·  R1
 Put attendance on ISB
 
 🗓️ Every day · from 9:00 AM, every 1 h until 10:59 PM
@@ -68,7 +68,7 @@ Put attendance on ISB
 
 Messages are laid out to skim: the title and due time are **bold**, the mail summary is a quoted block, times read
 as *Today, 5:00 PM* / *Tomorrow, 9:00 AM*, and commands you can send are shown as `code`. Every message has a category emoji (📚 coursework · 🏛️ academic notice · 🎉 event · 💼 opportunity · 🏠 campus ·
-✉️ personal · 📩 other), a priority dot (🔴 critical · 🟠 high · 🟡 medium · ⚪ low), and a short **#id** you can refer to.
+✉️ personal · 📩 other), a priority dot (🔴 critical · 🟠 high · 🟡 medium · ⚪ low), and a short tag (`D2`, `E1`, `R1`) for when names clash.
 
 ### ☀️ Daily digest (08:00)
 - ⏰ deadlines in the next 7 days
@@ -91,24 +91,34 @@ everything upcoming.
 |---|---|
 | `help` | command list |
 | `list` | all pending deadlines, events and routines |
-| `done 12` / `submitted 12` | stop reminders for deadline #12 (for a routine: done for today) |
-| `done 12 14 15` | several at once |
-| `registered 12` | event #12 registered → pre-event reminders |
-| `interested 12` / `no 12` | answer an event invite / drop any item |
-| `snooze 12 3h` / `snooze 12 2d` / `snooze 12 till 8pm` | pause reminders for an item |
-| `move 12 to Friday 5pm` / *"the OS deadline got extended to Monday"* | change the date; reminders are re-planned |
+| `done dbms` / `submitted os assignment` | stop reminders for that deadline (for a routine: done for today) |
+| `done D2` / `done D1 D3` | the same by tag, several at once |
+| `registered hackathon` | event registered → pre-event reminders |
+| `interested hackathon` / `no hackathon` | answer an event invite / drop any item |
+| `snooze os 3h` / `snooze os 2d` / `snooze os till 8pm` | pause reminders for an item |
+| `move os to Friday 5pm` / *"the OS deadline got extended to Monday"* | change the date; reminders are re-planned |
 | *"remind me …"* | a new one-off reminder or repeating routine (see above) |
-| `stop 14` | delete a routine |
+| `stop attendance` | delete a routine |
 | `undo` | take back your last done / drop / stop / snooze / move |
-| `details 12` | the full card again, with links |
+| `details os` | the full card again, with links (works for notices too) |
 | `add DBMS project due Friday 5pm` | add your own deadline or event (AI reads the date) |
 | `digest` | today's digest now |
 | `pause` / `resume` | mute everything except urgent reminders |
 | anything else, e.g. *"I submitted the OS assignment"* | the AI works out what you mean and which item |
 
-**No number needed:** swipe-reply to any of the bot's messages with `done`, `snooze 2h`, `no`, `details`, `stop`…
-and it applies to that item. Without a swipe-reply, a bare `done` applies to the last thing it messaged you about (it
-says which, and `undo` fixes a wrong guess).
+### Saying which item
+1. **By name** (the usual way): any word or two from the title, e.g. `done dbms`, `snooze hackathon 2h`. Every word you
+   type must appear in the title (`os` matches *OS Assignment 3*). If two items match, it asks *"Which one?"* with a button
+   for each. If nothing matches, the AI reads your message instead.
+2. **By tag**, when names clash: `D1, D2…` deadlines · `E1…` events · `R1…` reminders/routines. Tags are per type and
+   stay small: a new item takes the smallest free number. A freed number isn't reused for 24 h, so an old message's tag
+   doesn't suddenly point at something new. A bare number (`done 3`) works when only one item has it.
+   Notices have no tag, since there's nothing to tick off (`details hostel` still finds them).
+3. **Swipe-reply:** reply to any of the bot's messages with `done`, `snooze 2h`, `no`, `details`, `stop`…
+   and it applies to that item. Without a swipe-reply, a bare `done` applies to the last thing it messaged you about (it
+   says which, and `undo` fixes a wrong guess).
+
+Buttons always point at the exact item, whatever the tags are.
 
 Buttons and exact commands are instant and use no AI. Only messages from your own number (`WHATSAPP_RECIPIENT`) are
 accepted; everyone else is ignored.

@@ -18,7 +18,7 @@ from app.config import get_settings
 from app.db import session_scope
 from app.mail.base import MailError, RawEmail, get_mail_source
 from app.models import Email, Item
-from app.services import messages, notifier
+from app.services import labels, messages, notifier
 from app.services.decisions import Triage, analyze_email
 from app.services.extraction import Extraction
 from app.textutil import truncate
@@ -164,6 +164,7 @@ def build_items(session: Session, email: Email, t: Triage, ext: Extraction, raw:
         items.append(Item(kind="announcement", title=ext.title, status="info", **base))
     for item in items:
         session.add(item)
+        labels.assign(session, item)
     return items
 
 

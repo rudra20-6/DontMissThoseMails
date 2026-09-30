@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 from app import kv
 from app.clients.gemini import LLMUnavailable
 from app.models import Item, ReminderLog
-from app.services import messages, notifier, routines
+from app.services import labels, messages, notifier, routines
 from app.services.decisions import Intent, classify_message
 from app.services.digest import build_digest
 from app.timeutil import fmt, humanize_delta, local, parse_local, to_utc_naive, utcnow
@@ -29,7 +30,13 @@ ACTIVE = ("pending", "asked", "interested", "registered", "active")
 ITEM_INTENTS = ("mark_done", "mark_registered", "interested", "not_interested", "snooze", "details", "reschedule")
 UNDO_KEY = "undo"
 
-Parsed = tuple[str, list[int], float | None]
+@dataclass
+class Cmd:
+    intent: str
+    refs: list[str] = field(default_factory=list)  # "D3" / "3" typed, or "id:45" from a button
+    hours: float | None = None
+    query: str = ""  # a name, e.g. "dbms" in "done dbms"
+
 
 _VERBS: list[tuple[str, str]] = [
     ("mark_done", r"done|submitted|finished|completed|complete|marked|did it"),
@@ -39,10 +46,12 @@ _VERBS: list[tuple[str, str]] = [
     ("details", r"details|detail|info|more|link"),
 ]
 _FILLER = re.compile(r"\b(?:and|it|this|that|for today|today|now|already|pls|please)\b|[,&#]")
-_SNOOZE = re.compile(
-    r"^(?:snooze|later|remind)(?:\s*#?(\d+)(?![\d.]*\s*[hdm]))?"
-    r"(?:\s*(\d+(?:\.\d+)?)\s*(h|hrs?|hours?|d|days?|m|mins?|minutes?)?)?$"
-)
+_UNIT = r"(h|hrs?|hours?|d|days?|m|mins?|minutes?)"
+_DURATION = re.compile(rf"(?:^|\s)(\d+(?:\.\d+)?)\s*{_UNIT}$")
+_REF = re.compile(r"^(?:[der]\d{1,3}|\d{1,3})$", re.IGNORECASE)
+_NEEDS_AI = ("remind me", "move ", "reschedule ", "postpone ", "prepone ", "extend ", "shift ", "change ")
+_STOPWORDS = {"the", "a", "an", "my", "for", "to", "of", "on", "in", "with", "about", "me", "i", "have", "has", "was",
+              "is", "one", "thing", "task", "event", "deadline", "reminder", "wala", "vala"}
 _SIMPLE = {
     "list": "list", "ls": "list", "pending": "list", "upcoming": "list", "todo": "list", "status": "list",
     "routines": "list", "reminders": "list",
@@ -50,44 +59,60 @@ _SIMPLE = {
     "help": "help", "commands": "help", "?": "help", "menu": "help", "hi": "hello", "hello": "hello", "hey": "hello",
     "pause": "pause", "mute": "pause", "resume": "resume", "unmute": "resume", "undo": "undo",
 }
+_BUTTON_OF = {"mark_done": "done", "mark_registered": "reg", "interested": "int", "not_interested": "dismiss",
+              "details": "details", "snooze": "snooze"}
 
 
-def parse(text: str) -> Parsed | None:
-    """Deterministic parse -> (intent, item_ids, snooze_hours) or None (needs the AI)."""
-    t = text.strip().lower().rstrip(".!")
+def _hours(qty: str, unit: str | None) -> float:
+    u = (unit or "h")[0]
+    return float(qty) * 24 if u == "d" else float(qty) / 60 if u == "m" else float(qty)
+
+
+def _targets(rest: str) -> tuple[list[str], str]:
+    words = _FILLER.sub(" ", rest).split()
+    if all(_REF.match(w) for w in words):
+        return words, ""
+    return [], " ".join(words)
+
+
+def parse(text: str) -> Cmd | None:
+    """Deterministic parse, no AI. None -> let the AI read it."""
+    t = " ".join(text.strip().lower().rstrip(".!").split())
     if t in _SIMPLE:
-        return _SIMPLE[t], [], None
+        return Cmd(_SIMPLE[t])
     if t.startswith("add "):
-        return "add", [], None
-    m = _SNOOZE.match(t)
-    if m and not (t.startswith("remind") and not m.group(1)):
-        hours = None
-        if m.group(2):
-            qty, unit = float(m.group(2)), (m.group(3) or "h")[0]
-            hours = qty * 24 if unit == "d" else qty / 60 if unit == "m" else qty
-        return "snooze", [int(m.group(1))] if m.group(1) else [], hours
+        return Cmd("add")
+    if t.startswith(_NEEDS_AI):
+        return None
+    m = re.match(r"^(?:snooze|later|remind)\b(.*)$", t)
+    if m:
+        rest, hours = m.group(1), None
+        dur = _DURATION.search(rest)
+        if dur:
+            hours, rest = _hours(dur.group(1), dur.group(2)), rest[:dur.start()]
+        refs, query = _targets(rest)
+        if len(refs) == 2 and refs[1].isdigit() and hours is None:  # "snooze d3 3" -> 3 hours
+            hours, refs = float(refs[1]), refs[:1]
+        return Cmd("snooze", refs, hours, query)
     for intent, verbs in _VERBS:
         m = re.match(rf"^(?:{verbs})\b(.*)$", t)
-        if not m:
-            continue
-        rest = _FILLER.sub(" ", m.group(1)).strip()
-        if rest and not re.fullmatch(r"\d+(?:\s+\d+)*", rest):
-            return None  # e.g. "done with the OS assignment": let the AI work out which item
-        return intent, [int(x) for x in rest.split()], None
+        if m:
+            refs, query = _targets(m.group(1))
+            return Cmd(intent, refs, None, query)
     return None
 
 
-def parse_button(button_id: str) -> Parsed | None:
+def parse_button(button_id: str) -> Cmd | None:
     parts = button_id.split(":")
     mapping = {"done": "mark_done", "reg": "mark_registered", "int": "interested", "notint": "not_interested",
                "dismiss": "not_interested", "snooze": "snooze", "details": "details"}
     if parts[0] == "ack":
-        return "ack", [], None
+        return Cmd("ack")
     if parts[0] == "cmd" and len(parts) > 1:
-        return parts[1], [], None
+        return Cmd(parts[1])
     if parts[0] in mapping and len(parts) > 1 and parts[1].isdigit():
-        hours = float(parts[2]) if parts[0] == "snooze" and len(parts) > 2 else (3.0 if parts[0] == "snooze" else None)
-        return mapping[parts[0]], [int(parts[1])], hours
+        hours = float(parts[2]) if parts[0] == "snooze" and len(parts) > 2 else None
+        return Cmd(mapping[parts[0]], [f"id:{parts[1]}"], hours)
     return None
 
 
@@ -97,6 +122,67 @@ def _active_items(session: Session) -> list[Item]:
 
 def _sent_keys(session: Session, item_id: int) -> set[str]:
     return set(session.scalars(select(ReminderLog.key).where(ReminderLog.item_id == item_id)).all())
+
+
+def match_name(session: Session, query: str, include_notices: bool = False) -> list[Item]:
+    """Open items whose title contains every word of `query` (word prefixes: 'os' matches 'OS Assignment 3')."""
+    tokens = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in _STOPWORDS]
+    if not tokens:
+        return []
+    pool = _active_items(session)
+    if include_notices:
+        pool += list(session.scalars(select(Item).where(
+            Item.kind == "announcement", Item.created_at >= utcnow() - timedelta(days=14))).all())
+    out = []
+    for item in pool:
+        title = (item.title or "").lower()
+        words = re.findall(r"[a-z0-9]+", title)
+        if all(any(w.startswith(tok) for w in words) or (len(tok) >= 4 and tok in title) for tok in tokens):
+            out.append(item)
+    exact = [i for i in out if all(tok in re.findall(r"[a-z0-9]+", i.title.lower()) for tok in tokens)]
+    return exact or out  # whole-word hits beat prefix hits ("os" -> "OS quiz", not "OSDG hackathon")
+
+
+def _resolve(session: Session, cmd: Cmd) -> tuple[list[Item], list[Item], list[str]]:
+    """-> (items, choices when ambiguous, refs not found)."""
+    items: list[Item] = []
+    choices: list[Item] = []
+    missing: list[str] = []
+    for r in cmd.refs:
+        item = None
+        if r.startswith("id:"):
+            item = session.get(Item, int(r[3:]))
+        elif r.isdigit():
+            found = labels.by_number(session, int(r))
+            if len(found) > 1:
+                choices += found
+                continue
+            item = found[0] if found else None
+        else:
+            item = labels.find(session, r)
+        if item is None:
+            missing.append(r.upper())
+        elif item not in items:
+            items.append(item)
+    if cmd.query:
+        found = match_name(session, cmd.query, include_notices=cmd.intent == "details")
+        if len(found) == 1:
+            items += found
+        else:
+            choices += found
+    return items, choices, missing
+
+
+def _ask_which(session: Session, cmd: Cmd, choices: list[Item]) -> None:
+    choices = sorted(choices, key=lambda i: (i.label or "~")[0] + (i.label or "")[1:].zfill(3))
+    lines = "\n".join(messages.item_line(i) for i in choices[:8])
+    key = _BUTTON_OF.get(cmd.intent)
+    buttons = None
+    if key and len(choices) <= 3:
+        extra = f":{cmd.hours:g}" if cmd.intent == "snooze" and cmd.hours else ""
+        buttons = [(f"{key}:{i.id}{extra}", f"{i.label or ''} {i.title}".strip()[:20]) for i in choices]
+    tip = "_Tap one_" if buttons else f"_Reply with its tag, e.g._ `{cmd.intent.replace('mark_', '')} {messages.ref(choices[0])}`"
+    notifier.reply(session, f"🤔 *Which one?*\n{lines}\n\n{tip}", buttons)
 
 
 def _list_text(session: Session) -> str:
@@ -113,7 +199,7 @@ def _list_text(session: Session) -> str:
         parts.append("🎉 *Events*\n" + "\n".join(messages.item_line(i) for i in events))
     if routines_:
         parts.append("🔁 *Reminders*\n" + "\n".join(messages.item_line(i, _sent_keys(session, i.id)) for i in routines_))
-    return "\n\n".join(parts) + "\n\n_Reply_ `details <id>` _for more._"
+    return "\n\n".join(parts) + "\n\n_Say it by name, e.g._ `done dbms` _or_ `details hackathon`"
 
 
 def _now_text() -> str:
@@ -125,47 +211,62 @@ def handle_message(session: Session, text: str | None = None, button_id: str | N
                    context_id: str | None = None) -> None:
     # Any inbound message re-opens the WhatsApp 24h window: deliver everything we held back first.
     notifier.flush_outbox(session, force=True)
+    labels.backfill(session)
 
     ctx_item = notifier.item_for_message(session, context_id)
-    parsed = parse_button(button_id) if button_id else None
-    if not parsed and text:
-        parsed = parse(text)
+    cmd = parse_button(button_id) if button_id else None
+    if not cmd and text:
+        cmd = parse(text)
+    items: list[Item] = []
+    if cmd and cmd.intent in ITEM_INTENTS and (cmd.refs or cmd.query):
+        items, choices, missing = _resolve(session, cmd)
+        if choices and not items:
+            _ask_which(session, cmd, choices)
+            return
+        if missing and not items:
+            notifier.reply(session, f"🤷 I couldn't find {', '.join(missing)}.\n\n{_list_text(session)}")
+            return
+        if cmd.query and not items:
+            cmd = None  # the name matched nothing: let the AI read the whole message
     ai: Intent | None = None
-    if (not parsed or parsed[0] == "add") and text:
-        items = _active_items(session)
+    if (not cmd or cmd.intent == "add") and text:
+        active = _active_items(session)
         try:
-            ai = classify_message(text, [(i.id, f"{i.kind}: {i.title}") for i in items], _now_text(),
+            ai = classify_message(text, [(i.id, f"{i.label or ''} {i.kind}: {i.title}".strip()) for i in active],
+                                  _now_text(),
                                   replying_to=f"{ctx_item.id} ({ctx_item.kind}: {ctx_item.title})" if ctx_item else "")
         except LLMUnavailable:
             notifier.reply(session, "😵 My AI quota is used up for the moment, so I can only follow exact commands "
-                                    "right now (e.g. `done 12`, `list`). Send `help` for the list.")
+                                    "right now (e.g. `done dbms`, `list`). Send `help` for the list.")
             return
         log.info("Free-text %r -> %s", text, ai)
-        if parsed and parsed[0] == "add":
+        if cmd and cmd.intent == "add":
             ai.intent = "add"
-        ids = [ai.item_id] if ai.item_id else ([ctx_item.id] if ctx_item and ai.intent in ITEM_INTENTS else [])
-        parsed = (ai.intent, ids, ai.snooze_hours if ai.intent == "snooze" else None)
-    if not parsed:
+        target = session.get(Item, ai.item_id) if ai.item_id else (ctx_item if ai.intent in ITEM_INTENTS else None)
+        items = [target] if target else []
+        cmd = Cmd(ai.intent, [], ai.snooze_hours if ai.intent == "snooze" else None)
+    if not cmd:
         return
-    intent, ids, hours = parsed
     guessed = False
-    if intent in ITEM_INTENTS and not ids and ai is None:
+    if cmd.intent in ITEM_INTENTS and not items and ai is None:
         target = ctx_item or notifier.last_item(session, ACTIVE)
         guessed = ctx_item is None and target is not None
-        ids = [target.id] if target else []
-    _execute(session, intent, ids, hours, ai, guessed)
+        items = [target] if target else []
+    _execute(session, cmd.intent, items, cmd.hours, ai, guessed)
 
 
-def _need_item(session: Session, ids: list[int], verb: str) -> list[Item]:
-    items = [i for i in (session.get(Item, iid) for iid in ids) if i is not None]
+def _need_item(session: Session, items: list[Item], verb: str) -> list[Item]:
     if not items:
-        missing = f"I couldn't find #{ids[0]}. " if ids else ""
-        notifier.reply(session, f"{missing}Which one? Reply with the number, e.g. `{verb} 12`, or swipe-reply to my "
-                                f"message about it.\n\n{_list_text(session)}")
+        notifier.reply(session, f"Which one? Say it by name, e.g. `{verb} dbms`, or swipe-reply to my message about "
+                                f"it.\n\n{_list_text(session)}")
     return items
 
 
 # ---------------------------------------------------------------- undo
+
+def _name(item: Item) -> str:
+    return f"{item.label} {item.title}" if item.label else item.title
+
 
 def _snap(item: Item, add_keys: list[str] | None = None, del_keys: list[str] | None = None) -> dict:
     iso = lambda d: d.isoformat() if d else None  # noqa: E731
@@ -197,13 +298,14 @@ def _undo(session: Session) -> None:
         for key in snap["del_keys"]:
             if key not in existing:
                 session.add(ReminderLog(item_id=item.id, key=key))
+        labels.assign(session, item)
     kv.put(session, UNDO_KEY, None)
     notifier.reply(session, f"↩️ *Undone:* {data['label']}")
 
 
 # ---------------------------------------------------------------- actions
 
-def _execute(session: Session, intent: str, ids: list[int], hours: float | None, ai: Intent | None = None,
+def _execute(session: Session, intent: str, targets: list[Item], hours: float | None, ai: Intent | None = None,
              guessed: bool = False) -> None:
     hint = "\n_Wrong one? Send_ `undo`" if guessed else ""
     if intent in ("help", "hello"):
@@ -229,16 +331,16 @@ def _execute(session: Session, intent: str, ids: list[int], hours: float | None,
     elif intent == "remind":
         _add_routine(session, ai)
     elif intent == "mark_done":
-        _mark_done(session, _need_item(session, ids, "done"), hint)
+        _mark_done(session, _need_item(session, targets, "done"), hint)
     elif intent == "mark_registered":
-        items = _need_item(session, ids, "registered")
+        items = _need_item(session, targets, "registered")
         _save_undo(session, "registered", [_snap(i) for i in items])
         for item in items:
             item.status = "registered"
             when = f"\n📅 I'll remind you before it starts ({fmt(item.event_start)})." if item.event_start else ""
-            notifier.reply(session, f"🎟️ *Registered* for *{item.title}* {messages.tag(item)}.{when}{hint}", item_id=item.id)
+            notifier.reply(session, f"🎟️ *Registered* for {messages.pre(item)}*{item.title}*.{when}{hint}", item_id=item.id)
     elif intent == "interested":
-        for item in _need_item(session, ids, "interested")[:1]:
+        for item in _need_item(session, targets, "interested")[:1]:
             _save_undo(session, "interested", [_snap(item)])
             item.status = "interested"
             item.snoozed_until = None
@@ -250,24 +352,24 @@ def _execute(session: Session, intent: str, ids: list[int], hours: float | None,
                 [(f"reg:{item.id}", "✅ Registered now")], item_id=item.id,
             )
     elif intent == "not_interested":
-        items = _need_item(session, ids, "no")
-        _save_undo(session, "dropped " + ", ".join(f"#{i.id}" for i in items), [_snap(i) for i in items])
+        items = _need_item(session, targets, "no")
+        _save_undo(session, "dropped " + ", ".join(_name(i) for i in items), [_snap(i) for i in items])
         for item in items:
             if item.kind == "routine":
                 item.status = "stopped"
-                text = f"🛑 *Stopped* {messages.tag(item)} *{item.title}*. No more reminders."
+                text = f"🛑 *Stopped* {messages.pre(item)}*{item.title}*. No more reminders."
             else:
                 item.status = "not_interested" if item.kind == "event" else "dismissed"
-                text = f"👌 *Dropped* {messages.tag(item)} *{item.title}*. No more reminders about it."
+                text = f"👌 *Dropped* {messages.pre(item)}*{item.title}*. No more reminders about it."
             notifier.reply(session, text + hint, item_id=item.id)
     elif intent == "snooze":
-        for item in _need_item(session, ids, "snooze")[:1]:
+        for item in _need_item(session, targets, "snooze")[:1]:
             _snooze(session, item, hours, ai, hint)
     elif intent == "reschedule":
-        for item in _need_item(session, ids, "move")[:1]:
+        for item in _need_item(session, targets, "move")[:1]:
             _reschedule(session, item, ai, hint)
     elif intent == "details":
-        for item in _need_item(session, ids, "details")[:1]:
+        for item in _need_item(session, targets, "details")[:1]:
             nxt = routines.next_slot(item.schedule, utcnow(), item.created_at, _sent_keys(session, item.id)) \
                 if item.kind == "routine" and item.schedule else None
             text = messages.routine_card(item, nxt) if item.kind == "routine" else messages.item_card(item)
@@ -291,13 +393,13 @@ def _mark_done(session: Session, items: list[Item], hint: str) -> None:
             item.snoozed_until = None
             nxt = routines.next_slot(sch, utcnow(), item.created_at, _sent_keys(session, item.id))
             again = f" Next reminder *{fmt(to_utc_naive(nxt))}*." if nxt else ""
-            lines.append(f"✅ *Done for today:* {messages.tag(item)} *{item.title}*.{again}")
+            lines.append(f"✅ *Done for today:* {messages.pre(item)}*{item.title}*.{again}")
         else:
             snaps.append(_snap(item))
             item.status = "done"
             item.snoozed_until = None
-            lines.append(f"✅ *Nice!* {messages.tag(item)} *{item.title}* is done. No more reminders.")
-    _save_undo(session, "done " + ", ".join(f"#{i.id}" for i in items), snaps)
+            lines.append(f"✅ *Nice!* {messages.pre(item)}*{item.title}* is done. No more reminders.")
+    _save_undo(session, "done " + ", ".join(_name(i) for i in items), snaps)
     notifier.reply(session, "\n".join(lines) + hint, item_id=items[0].id if len(items) == 1 else None)
 
 
@@ -306,18 +408,19 @@ def _snooze(session: Session, item: Item, hours: float | None, ai: Intent | None
     if until is None or until <= utcnow():
         hours = hours or (ai.snooze_hours if ai and ai.snooze_hours else None) or (0.5 if item.kind == "routine" else 3.0)
         until = utcnow() + timedelta(hours=hours)
-    _save_undo(session, f"snooze #{item.id}", [_snap(item)])
+    _save_undo(session, f"snooze {_name(item)}", [_snap(item)])
     item.snoozed_until = until
     if item.kind == "routine" and item.status in ("done", "expired"):
         item.status = "active"  # "remind me again in 15 min" after a one-off reminder fired
-    notifier.reply(session, f"⏳ *Snoozed* {messages.tag(item)} *{item.title}* until *{fmt(until)}*.{hint}",
+        labels.assign(session, item)
+    notifier.reply(session, f"⏳ *Snoozed* {messages.pre(item)}*{item.title}* until *{fmt(until)}*.{hint}",
                    item_id=item.id)
 
 
 def _reschedule(session: Session, item: Item, ai: Intent | None, hint: str) -> None:
     new = parse_local(ai.new_time) if ai else None
     if new is None:
-        notifier.reply(session, f"🤔 What's the new date? Try `move {item.id} to Friday 5pm`.")
+        notifier.reply(session, f"🤔 What's the new date? Try `move {messages.ref(item)} to Friday 5pm`.")
         return
     keys = _sent_keys(session, item.id)
     if item.kind == "deadline":
@@ -327,21 +430,23 @@ def _reschedule(session: Session, item: Item, ai: Intent | None, hint: str) -> N
     elif item.kind == "routine":
         stale = []
     else:
-        notifier.reply(session, f"ℹ️ {messages.tag(item)} is a notice, it has no date to move.")
+        notifier.reply(session, f"ℹ️ *{item.title}* is a notice, it has no date to move.")
         return
-    _save_undo(session, f"move #{item.id}", [_snap(item, del_keys=stale)])
+    _save_undo(session, f"move {_name(item)}", [_snap(item, del_keys=stale)])
     if stale:
         session.execute(delete(ReminderLog).where(ReminderLog.item_id == item.id, ReminderLog.key.in_(stale)))
     item.snoozed_until = None
     if item.kind == "deadline":
         item.due_at = new
         item.status = "pending"
-        what = f"📌 *Moved* {messages.tag(item)} *{item.title}*\n⏰ Now due *{fmt(new)}*  _({humanize_delta(new)})_"
+        labels.assign(session, item)
+        what = f"📌 *Moved* {messages.pre(item)}*{item.title}*\n⏰ Now due *{fmt(new)}*  _({humanize_delta(new)})_"
     elif item.kind == "event":
         item.event_start = new
         if item.status == "expired":
             item.status = "registered"
-        what = f"📌 *Moved* {messages.tag(item)} *{item.title}*\n📅 Now *{fmt(new)}*  _({humanize_delta(new)})_"
+        labels.assign(session, item)
+        what = f"📌 *Moved* {messages.pre(item)}*{item.title}*\n📅 Now *{fmt(new)}*  _({humanize_delta(new)})_"
     else:
         sch = dict(item.schedule or {})
         sch["start"] = local(new).strftime("%H:%M")
@@ -349,7 +454,8 @@ def _reschedule(session: Session, item: Item, ai: Intent | None, hint: str) -> N
             sch["date"] = local(new).date().isoformat()
         item.schedule = sch
         item.status = "active"
-        what = f"📌 *Changed* {messages.tag(item)} *{item.title}*\n🗓️ {routines.describe(sch)}"
+        labels.assign(session, item)
+        what = f"📌 *Changed* {messages.pre(item)}*{item.title}*\n🗓️ {routines.describe(sch)}"
     notifier.reply(session, what + "\n_Reminders re-planned._" + hint, item_id=item.id)
 
 
@@ -364,6 +470,7 @@ def _add_task(session: Session, ai: Intent | None) -> None:
     else:
         item = Item(kind="deadline", category="personal", title=title, due_at=due, status="pending", importance=3.0)
     session.add(item)
+    labels.assign(session, item)
     session.flush()
     what = "event" if is_event else "deadline"
     notifier.reply(session, f"📌 *Added {what}* {messages.tag(item)}\n*{title}*\n"
@@ -391,6 +498,7 @@ def _add_routine(session: Session, ai: Intent | None) -> None:
     item = Item(kind="routine", category="personal", title=(ai.task_title or "Reminder")[:200], schedule=sch,
                 status="active", importance=2.5, summary="")
     session.add(item)
+    labels.assign(session, item)
     session.flush()
     nxt = routines.next_slot(sch, utcnow(), item.created_at, set())
     if nxt is None and not days:  # "at 9am" said at 10am: they mean tomorrow

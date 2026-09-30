@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app import kv
 from app.config import get_settings
 from app.db import session_scope
-from app.services import notifier
+from app.services import labels, notifier
 from app.services.digest import maybe_send_catchup, maybe_send_daily_digest
 from app.services.pipeline import poll_mail, process_pending
 from app.services.reminders import run_reminders
@@ -40,6 +40,7 @@ def tick(force_poll: bool = False) -> dict:
         else:
             result["mails"] = process_pending()  # retry mail that was waiting for AI quota (free if still exhausted)
         with session_scope() as session:
+            labels.backfill(session)
             result["reminders"] = run_reminders(session)
         with session_scope() as session:
             result["catchup"] = maybe_send_catchup(session)
