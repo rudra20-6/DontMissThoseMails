@@ -103,3 +103,12 @@ class SentMessage(Base):
     wamid: Mapped[str] = mapped_column(String(255), primary_key=True)
     item_id: Mapped[int] = mapped_column(Integer, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class Outbound(Base):
+    """Recently sent messages, so one Meta later reports as undelivered (24h window closed) can be re-queued."""
+
+    __tablename__ = "outbound"
+    wamid: Mapped[str] = mapped_column(String(255), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

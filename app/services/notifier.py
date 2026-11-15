@@ -16,13 +16,15 @@ from sqlalchemy.orm import Session
 from app import diag, kv
 from app.clients.whatsapp import REENGAGEMENT_ERROR, WhatsAppClient, WhatsAppError
 from app.config import get_settings
-from app.models import Item, Outbox, SentMessage
+from app.models import Item, Outbound, Outbox, SentMessage
 from app.timeutil import local, utcnow
 
 log = logging.getLogger(__name__)
 
 NUDGE_KEY = "last_template_nudge"
 PAUSE_KEY = "paused"
+INBOUND_KEY = "last_inbound_at"
+WINDOW = timedelta(hours=23, minutes=50)  # WhatsApp allows free-form messages for 24h after the user's last message
 NUDGE_EVERY = timedelta(hours=12)
 SENT_MESSAGE_TTL = timedelta(days=30)
 
@@ -36,6 +38,30 @@ def is_quiet_now() -> bool:
     if start == end:
         return False
     return start <= hour or hour < end if start > end else start <= hour < end
+
+
+def mark_inbound(session: Session) -> None:
+    kv.put(session, INBOUND_KEY, utcnow().isoformat())
+
+
+def window_open(session: Session) -> bool:
+    """False once 24h have passed since the user last wrote to us (unknown -> assume open)."""
+    last = kv.get(session, INBOUND_KEY)
+    return last is None or utcnow() - _parse(last) < WINDOW
+
+
+def delivery_failed(session: Session, wamid: str | None, code: int | None) -> None:
+    """Meta accepted a message, then reported it undelivered. If the 24h window was the reason, put it back in
+    the queue and send the template that lets the user re-open the chat."""
+    if code != REENGAGEMENT_ERROR:
+        return
+    row = session.get(Outbound, wamid) if wamid else None
+    if row is not None:
+        _queue(session, row.payload)
+        session.delete(row)
+    if window_open(session):  # our idea of the window was wrong: remember it's closed
+        kv.put(session, INBOUND_KEY, (utcnow() - timedelta(hours=25)).isoformat())
+    _nudge(session)
 
 
 def is_paused(session: Session) -> bool:
@@ -52,7 +78,12 @@ def _deliver(payload: dict) -> list[str]:
     return [m["id"] for m in (resp or {}).get("messages", []) if m.get("id")]
 
 
-def _remember(session: Session, ids: list[str] | None, item_id: int | None) -> None:
+def _remember(session: Session, ids: list[str] | None, item_id: int | None, payload: dict | None = None) -> None:
+    if payload is not None:
+        for wamid in ids or []:
+            if session.get(Outbound, wamid) is None:
+                session.add(Outbound(wamid=wamid, payload=payload))
+        session.execute(delete(Outbound).where(Outbound.created_at < utcnow() - timedelta(days=3)))
     if not item_id or not ids:
         return
     for wamid in ids:
@@ -113,6 +144,11 @@ def notify(session: Session, text: str, buttons: Buttons = None, urgent: bool = 
     if not urgent and (is_paused(session) or (is_quiet_now() and not scheduled)):
         _queue(session, payload)
         return False
+    if not window_open(session):
+        # Meta would accept it and then silently drop it: hold it and ask the user to re-open the chat.
+        _queue(session, payload)
+        _nudge(session)
+        return False
     return _send_or_queue(session, payload)
 
 
@@ -123,7 +159,7 @@ def reply(session: Session, text: str, buttons: Buttons = None, item_id: int | N
 
 def _send_or_queue(session: Session, payload: dict) -> bool:
     try:
-        _remember(session, _deliver(payload), payload.get("item"))
+        _remember(session, _deliver(payload), payload.get("item"), payload)
         diag.record("last_send_ok", preview=payload["text"][:80])
         return True
     except WhatsAppError as exc:
@@ -140,6 +176,10 @@ def flush_outbox(session: Session, force: bool = False) -> int:
     """Send queued messages. `force` ignores quiet hours (used when the user just messaged us)."""
     if is_paused(session) or (not force and is_quiet_now()):
         return 0
+    if not force and not window_open(session):
+        if session.scalar(select(Outbox.id).where(Outbox.sent_at.is_(None)).limit(1)):
+            _nudge(session)
+        return 0
     sent = 0
     rows = session.scalars(select(Outbox).where(Outbox.sent_at.is_(None)).order_by(Outbox.id)).all()
     for row in rows:
@@ -151,7 +191,7 @@ def flush_outbox(session: Session, force: bool = False) -> int:
             row.sent_at = utcnow()  # e.g. an hourly routine ping that's out of date by now
             continue
         try:
-            _remember(session, _deliver(row.payload), row.payload.get("item"))
+            _remember(session, _deliver(row.payload), row.payload.get("item"), row.payload)
             row.sent_at = utcnow()
             sent += 1
         except WhatsAppError as exc:

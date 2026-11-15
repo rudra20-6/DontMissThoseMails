@@ -164,9 +164,30 @@ Rules run **before** the AI and cost nothing: `IGNORE_SENDERS` / `IGNORE_SUBJECT
 ## Delivery rules
 - **Quiet hours** 23:00–07:00: non-urgent messages are queued and delivered in the morning.
 - **Pause mode:** only urgent reminders get through until `resume`.
-- **WhatsApp 24h window:** WhatsApp only lets a business message you freely within 24h of your last message. If it's closed,
-  messages are queued and a single template nudges you (at most every 12h). Your next reply delivers the whole queue in order.
+- **WhatsApp 24h window:** WhatsApp only lets a business message you freely within 24h of your last message.
+  After that, Meta still *accepts* messages and then silently drops them. The bot keeps track of when you last wrote:
+  once the window has closed it holds messages in a queue and sends one approved template (at most every 12 h) asking
+  you to reply. If Meta drops one anyway (error `131047`), it goes back in the queue. Your next message, anything at all,
+  delivers the whole queue in order. **Tip:** reply to the morning digest (tap 👍) and the window never closes.
 - Failed sends are retried up to 5 times.
+
+## When something breaks, it tells you
+The bot messages you on WhatsApp when it can't do its job, and says plainly whether you might lose info:
+
+| Problem | When you're told | Could you miss something? |
+|---|---|---|
+| Can't log in to the mailbot Gmail (app password revoked/changed) | after 10 min | **Delayed, not lost:** mail waits in Gmail and is caught up once fixed, but you may miss things meanwhile. The message says how to fix it. |
+| Can't reach the mail server (network) | after 30 min (`MAIL_DOWN_ALERT_MINUTES`) | Same as above |
+| No new mail at all for 2 days (`MAIL_SILENCE_ALERT_HOURS`) | once | **Maybe lost:** the Outlook forwarding rule has probably stopped, so mail never reaches the bot |
+| AI down for 45+ min, so mail is read with keyword rules | right away, with the list of those mails | **Maybe missed:** keyword rules can miss dates, times and links. Check the listed mails yourself. |
+| A mail fails to process 3 times | right away, with its subject | **Yes:** read it yourself |
+
+- Each problem is reported **once**, not every minute. Mail outages are repeated every 12 h, and the 08:00 digest
+  repeats anything still broken. You get a "✅ back" message when it recovers.
+- The AI being briefly out of quota is *not* reported. Mail just waits in the queue, and nothing is lost.
+- If you haven't written to the bot for 24h, these alerts wait behind the template message like everything else
+  (see the 24h window above).
+- It can't tell you about WhatsApp itself failing (for example an expired token). Use `/admin/whatsapp-check` for that.
 
 ## Built for free hosting
 - One FastAPI process on Render's free tier, with an internal 1-minute scheduler. `/cron/tick`, hit every 5 minutes by

@@ -21,6 +21,8 @@ Built by an IIIT student, for IIIT students (`iiit.ac.in` Outlook accounts). Fre
 - 🔁 **Your own reminders, set in chat:** *"remind me to put attendance on ISB every hour after 9am until I say done,
   every day"*. It pings you every hour until you tap **✅ Done for today**, then starts again tomorrow.
 - ↩️ **Swipe-reply** `done` / `snooze 2h` / `no` to any bot message. Or just name it: `done dbms`. `undo` if you slip.
+- 🩺 **Tells you when it's broken:** can't read mail, AI down, forwarding stopped. It also says whether you might
+  have missed something, and how to fix it.
 - 💬 **Talk to it normally:** *"I submitted the OS assignment"*, `snooze hackathon 2d`, `add DBMS project due Friday 5pm`, `list`.
 - 📥 **One-time catch-up:** forward last week's mail once and get a single summary of what still matters.
 

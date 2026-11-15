@@ -12,7 +12,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import func, select
 
-from app import diag, scheduler
+from app import diag, kv, scheduler
 from app.clients.gemini import get_pool
 from app.clients.whatsapp import WhatsAppClient
 from app.config import get_settings
@@ -94,6 +94,8 @@ def status(token: str | None = Query(None)) -> dict:
         pending = s.scalar(select(func.count()).select_from(Email).where(Email.action == "pending"))
         queued = s.scalar(select(func.count()).select_from(Outbox).where(Outbox.sent_at.is_(None)))
         paused = notifier.is_paused(s)
+        health_state = kv.get(s, "health") or {}
+        window = notifier.window_open(s)
     return {
         "mail_provider": settings.mail_provider,
         "outlook_connected": graph.is_connected() if settings.mail_provider == "graph" else None,
@@ -105,6 +107,8 @@ def status(token: str | None = Query(None)) -> dict:
         "outbox_queued": queued,
         "paused": paused,
         "quiet_hours_now": notifier.is_quiet_now(),
+        "whatsapp_24h_window_open": window,
+        "health": {k: v for k, v in health_state.items() if k not in ("ai_fallback", "failed_mails")},
     }
 
 
@@ -168,6 +172,7 @@ async def wa_incoming(request: Request, background: BackgroundTasks) -> dict:
                     log.error("WhatsApp delivery failed: %s", err)
                     diag.record("last_delivery_failure", code=err.get("code"), title=err.get("title"),
                                 details=(err.get("error_data") or {}).get("details"))
+                    background.add_task(_delivery_failed, st.get("id"), err.get("code"))
             for msg in value.get("messages", []) or []:
                 sender = "".join(ch for ch in msg.get("from", "") if ch.isdigit())
                 accepted = sender == settings.whatsapp_recipient
@@ -198,6 +203,14 @@ def _extract(msg: dict) -> tuple[str | None, str | None]:
     if kind == "button":  # quick-reply on a template
         return msg.get("button", {}).get("text") or "show", None
     return None, None
+
+
+def _delivery_failed(wamid: str | None, code: int | None) -> None:
+    try:
+        with session_scope() as s:
+            notifier.delivery_failed(s, wamid, code)
+    except Exception:  # noqa: BLE001
+        log.exception("Failed handling a delivery failure")
 
 
 def _handle(text: str | None, button: str | None, context_id: str | None = None) -> None:

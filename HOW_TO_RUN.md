@@ -306,7 +306,7 @@ Open `/admin/whatsapp-check?token=ADMIN_TOKEN&send=true` right after sending `hi
 | `3_webhook: NONE` | Meta isn't calling the bot. Do **8b, 8c and 8d**, and message the **test number**, not yourself. |
 | `3_webhook … accepted: false` | The message came from a different number than `WHATSAPP_RECIPIENT`; the `reason` shows both. |
 | `last rejected webhook: bad X-Hub-Signature-256` | Wrong `WHATSAPP_APP_SECRET` → copy it again (5c). |
-| test send works, nothing arrives later | `131047` in `last async delivery failure` = 24h window closed → send the bot any message. |
+| test send works, nothing arrives later | `131047` in `last async delivery failure` = 24h window closed → send the bot any message. The bot now notices this itself, holds messages and sends you the template; `/status` shows `whatsapp_24h_window_open`. |
 
 ### Other problems
 

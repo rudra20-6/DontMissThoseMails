@@ -18,7 +18,7 @@ from app.config import get_settings
 from app.db import session_scope
 from app.mail.base import MailError, RawEmail, get_mail_source
 from app.models import Email, Item
-from app.services import labels, messages, notifier
+from app.services import health, labels, messages, notifier
 from app.services.decisions import Triage, analyze_email
 from app.services.extraction import Extraction
 from app.textutil import truncate
@@ -32,10 +32,16 @@ CATCHUP_AFTER_HOURS = 24  # mails originally sent longer ago than this are summa
 def poll_mail() -> int:
     """Fetch new mail into the queue, then work through the queue. Returns emails processed."""
     try:
-        for raw in get_mail_source().fetch_new():
-            ingest(raw)
-    except MailError as exc:
+        raws = get_mail_source().fetch_new()
+    except Exception as exc:  # noqa: BLE001 - a login/network problem must not stop reminders
         log.warning("Mail fetch failed: %s", exc)
+        with session_scope() as session:
+            health.mail_error(session, str(exc) if isinstance(exc, MailError) else f"{type(exc).__name__}: {exc}")
+    else:
+        for raw in raws:
+            ingest(raw)
+        with session_scope() as session:
+            health.mail_ok(session, len(raws))
     return process_pending()
 
 
@@ -79,6 +85,7 @@ def process_pending(limit: int = MAX_PER_TICK) -> int:
                 email.attempts += 1
                 if email.attempts >= 3:
                     email.action = "error"
+                    health.mail_failed(session, email.sender, email.subject)
     return done
 
 
@@ -92,6 +99,10 @@ def process_one(email_id: int) -> None:
         allow_heuristic = waited >= timedelta(minutes=s.llm_retry_max_minutes)
         triage, ext = analyze_email(email.sender, email.subject, email.body, local(email.received_at).isoformat(),
                                     email.links or [], allow_heuristic=allow_heuristic)
+        if triage.source == "heuristic":
+            health.ai_fallback(session, email.sender, email.subject, health.ai_reason())
+        elif triage.source == "gemini":
+            health.ai_ok(session)
         email.category = triage.category
         email.importance = triage.importance
         email.decision = triage.to_dict()

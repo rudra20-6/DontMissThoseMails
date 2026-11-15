@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     gemini_max_wait_seconds: float = 8  # wait this long for a free RPM slot before moving to the next model
     llm_retry_max_minutes: int = 45  # emails waiting on quota this long get processed with keyword rules instead
 
+    # --- Health alerts (sent to you on WhatsApp) ---
+    mail_down_alert_minutes: int = 30  # mail fetch failing this long -> alert (wrong password: after 10 min)
+    mail_silence_alert_hours: int = 48  # no new mail at all for this long -> "check your forwarding" (0 = off)
+
     # --- Behaviour ---
     quiet_hours_start: int = 23  # local hour; no messages from this hour...
     quiet_hours_end: int = 7  # ...until this hour (queued and sent afterwards)

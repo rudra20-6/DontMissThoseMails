@@ -210,6 +210,7 @@ def _now_text() -> str:
 def handle_message(session: Session, text: str | None = None, button_id: str | None = None,
                    context_id: str | None = None) -> None:
     # Any inbound message re-opens the WhatsApp 24h window: deliver everything we held back first.
+    notifier.mark_inbound(session)
     notifier.flush_outbox(session, force=True)
     labels.backfill(session)
 

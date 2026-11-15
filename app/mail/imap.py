@@ -146,6 +146,8 @@ class ImapSource:
             conn.logout()
         except imaplib.IMAP4.error as exc:
             raise MailError(f"IMAP error: {exc}") from exc
+        except OSError as exc:  # DNS, timeout, connection reset
+            raise MailError(f"network error talking to {s.imap_host}: {exc}") from exc
         # No cap here: storing is cheap and analysis is queued (a bulk forward can carry dozens of mails).
         out.sort(key=lambda e: e.received_at)
         if out:

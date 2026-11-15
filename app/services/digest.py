@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app import kv
 from app.config import get_settings
 from app.models import Item, ReminderLog
-from app.services import messages, notifier, routines
+from app.services import health, messages, notifier, routines
 from app.timeutil import fmt, local, utcnow
 
 DIGEST_KEY = "last_digest_date"
@@ -37,6 +37,7 @@ def build_digest(session: Session) -> str:
     ]
 
     parts = [f"☀️ *Good morning!*  ·  _{local(now).strftime('%A %d %b')}_"]
+    parts += health.digest_warnings(session)
     soon = [d for d in deadlines if d.due_at and d.due_at <= week]
     later = [d for d in deadlines if d.due_at and d.due_at > week]
     if soon:
@@ -59,7 +60,7 @@ def build_digest(session: Session) -> str:
         parts.append("\n📬 *Other mail (low priority)*\n" + "\n".join(lines))
         for i in held:
             i.digested = True
-    if len(parts) == 1:
+    if not any(p.startswith("\n") for p in parts):
         parts.append("\n🎈 Nothing pending. Enjoy your day!")
     parts.append("\n_Reply_ `details <name>` _for more,_ `help` _for commands._")
     return "\n".join(parts)
