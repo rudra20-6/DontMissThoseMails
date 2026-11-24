@@ -165,7 +165,13 @@ async def wa_incoming(request: Request, background: BackgroundTasks) -> dict:
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
+            to_number_id = (value.get("metadata") or {}).get("phone_number_id")
+            if to_number_id and settings.whatsapp_phone_number_id and to_number_id != settings.whatsapp_phone_number_id:
+                continue  # meant for another bot number on the same WhatsApp account
             for st in value.get("statuses", []) or []:
+                recipient = "".join(ch for ch in str(st.get("recipient_id", "")) if ch.isdigit())
+                if recipient and recipient != settings.whatsapp_recipient:
+                    continue  # a delivery report for another bot's user (shared test number)
                 # Meta reports async delivery failures here (e.g. 131047 window closed, 131026 undeliverable)
                 if st.get("status") == "failed":
                     err = (st.get("errors") or [{}])[0]

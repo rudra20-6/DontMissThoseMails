@@ -74,3 +74,18 @@ def test_webhook_status_failure_triggers_requeue(monkeypatch, sent):
         "errors": [{"code": 131047, "title": "Re-engagement message"}]}]}}]}]}
     TestClient(app).post("/webhook/whatsapp", json=payload)
     assert _queued() == 1
+
+
+def test_delivery_report_for_another_bots_user_is_ignored(monkeypatch, sent):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    templates = _templates(monkeypatch)
+    payload = {"entry": [{"changes": [{"value": {"statuses": [{
+        "id": "wamid.other", "status": "failed", "recipient_id": "918888888888",
+        "errors": [{"code": 131047, "title": "Re-engagement message"}]}]}}]}]}
+    TestClient(app).post("/webhook/whatsapp", json=payload)
+    with session_scope() as s:
+        assert notifier.window_open(s)
+    assert templates == []
